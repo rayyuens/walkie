@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>ESP32 對講機 - 高清版 v4</title>
+  <title>ESP32 對講機 - v5.0 零延遲版</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
     body {
@@ -19,7 +19,7 @@
       user-select: none;
       -webkit-user-select: none;
     }
-    .ver { font-size: 13px; color: #00e676; margin-bottom: 8px; font-weight: bold; }
+    .ver { font-size: 13px; color: #00b0ff; margin-bottom: 8px; font-weight: bold; }
     .status {
       margin-bottom: 20px;
       font-size: 16px;
@@ -67,11 +67,11 @@
 </head>
 <body>
 
-  <div class="ver">v4.0 高清插值升頻 + 零延遲版</div>
+  <div class="ver">v5.0 雙核 u-law 壓縮 + RingBuffer 零延遲引擎</div>
   <div class="status" id="statusText">請先點擊下方按鈕啟動音訊</div>
   <button id="initBtn">1. 啟用對講機</button>
   <button id="pttBtn">按住通話 (PTT)</button>
-  <div class="debug" id="debugText">TX: 0 包 | RX: 0 包</div>
+  <div class="debug" id="debugText">TX: 0 包 | RX: 0 包 | 延遲緩衝: 0ms</div>
 
   <script>
     const MQTT_BROKER = "wss://broker.hivemq.com:8884/mqtt";
@@ -82,13 +82,32 @@
     let client = null;
     let audioCtx = null;
     let micStream = null;
-    let scriptNode = null;
-    let silencer = null;
+    let ioNode = null;
     let isTalking = false;
-    let nextStartTime = 0;
-    let lastSample = 0;
     let txCount = 0;
     let rxCount = 0;
+
+    // G.711 u-law 快速解碼表 (256 bytes -> Float32 [-1.0, 1.0])
+    const ULAW_TABLE = new Float32Array(256);
+    (function buildUlawTable() {
+      for (let i = 0; i < 256; i++) {
+        let u = ~i & 0xFF;
+        let sign = (u & 0x80) ? -1 : 1;
+        let exponent = (u >> 4) & 0x07;
+        let mantissa = u & 0x0F;
+        let sample = (((mantissa << 3) + 0x84) << exponent) - 0x84;
+        ULAW_TABLE[i] = (sign * sample) / 32768.0;
+      }
+    })();
+
+    // 環形緩衝區 (以手機原生取樣率 48kHz 儲存)
+    const RING_CAPACITY = 32768;
+    const ringBuffer = new Float32Array(RING_CAPACITY);
+    let writePtr = 0;
+    let readPtr = 0;
+    let availableSamples = 0;
+    let prevSample = 0;
+    let jitterReady = false;
 
     const initBtn = document.getElementById('initBtn');
     const pttBtn = document.getElementById('pttBtn');
@@ -96,7 +115,8 @@
     const debugText = document.getElementById('debugText');
 
     function updateDebug() {
-      debugText.innerText = `TX (發送): ${txCount} 包 | RX (接收): ${rxCount} 包`;
+      const ms = audioCtx ? Math.round((availableSamples / audioCtx.sampleRate) * 1000) : 0;
+      debugText.innerText = `TX: ${txCount} 包 | RX: ${rxCount} 包 | 延遲緩衝: ${ms}ms`;
     }
 
     initBtn.onclick = async () => {
@@ -117,6 +137,45 @@
           await audioCtx.resume();
         }
 
+        // 建立單一常駐音訊引擎：同時處理「收音發送」與「RingBuffer 無縫低延遲播放」
+        const micSource = audioCtx.createMediaStreamSource(micStream);
+        ioNode = audioCtx.createScriptProcessor(2048, 1, 1);
+
+        ioNode.onaudioprocess = (e) => {
+          const input = e.inputBuffer.getChannelData(0);
+          const output = e.outputBuffer.getChannelData(0);
+
+          if (isTalking) {
+            // 講話模式：輸出完全靜音 (防止回授爆音)，並累計發送
+            for (let i = 0; i < output.length; i++) output[i] = 0;
+            sendMicChunk(input, audioCtx.sampleRate);
+          } else {
+            // 收聽模式：需要至少 60ms 緩衝才開始播，防止斷續；完成後平滑輸出
+            const minStartSamples = Math.floor(audioCtx.sampleRate * 0.06);
+            if (!jitterReady && availableSamples >= minStartSamples) {
+              jitterReady = true;
+            }
+
+            if (jitterReady && availableSamples > 0) {
+              for (let i = 0; i < output.length; i++) {
+                if (availableSamples > 0) {
+                  output[i] = ringBuffer[readPtr];
+                  readPtr = (readPtr + 1) % RING_CAPACITY;
+                  availableSamples--;
+                } else {
+                  output[i] = 0;
+                  jitterReady = false;
+                }
+              }
+            } else {
+              for (let i = 0; i < output.length; i++) output[i] = 0;
+            }
+          }
+        };
+
+        micSource.connect(ioNode);
+        ioNode.connect(audioCtx.destination);
+
         statusText.innerText = `音訊就緒 (${audioCtx.sampleRate}Hz)，正在連 HiveMQ...`;
 
         client = mqtt.connect(MQTT_BROKER, {
@@ -134,8 +193,8 @@
         client.on('message', (topic, payload) => {
           if (topic === TOPIC_ESP32_TX && !isTalking) {
             rxCount++;
+            pushUlawToRingBuffer(payload);
             updateDebug();
-            playIncomingPCM(payload);
           }
         });
 
@@ -149,57 +208,60 @@
       }
     };
 
-    // 核心升級：手動將 16kHz 線性插值平滑升頻至手機原生取樣率 (48kHz)，徹底消除 iOS 破音同接縫雜音
-    function playIncomingPCM(payload) {
+    // 將收到的 8-bit u-law 封包解碼並插值升頻寫入 RingBuffer
+    function pushUlawToRingBuffer(payload) {
       if (!audioCtx) return;
-      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const inLen = payload.byteLength;
+      if (inLen === 0) return;
 
-      const inSamples = Math.floor(payload.byteLength / 2);
-      if (inSamples === 0) return;
-
-      const dataView = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-      const raw16k = new Float32Array(inSamples);
-
-      for (let i = 0; i < inSamples; i++) {
-        const int16 = dataView.getInt16(i * 2, true);
-        raw16k[i] = int16 / 32768.0;
-      }
-
-      // 計算手機原生取樣率倍數 (例如 48000 / 16000 = 3 倍)
       const nativeRate = audioCtx.sampleRate;
       const ratio = nativeRate / TARGET_SAMPLE_RATE;
-      const outSamples = Math.floor(inSamples * ratio);
-      const upsampled = new Float32Array(outSamples);
+      const outLen = Math.floor(inLen * ratio);
 
-      // 線性插值平滑升頻 + 封包頭尾無縫銜接
-      for (let i = 0; i < outSamples; i++) {
+      // 嚴格延遲鎖定：如果緩衝區積壓超過 220ms，立即丟棄舊數據，永遠保持即時通話！
+      const maxAllowedSamples = Math.floor(nativeRate * 0.22);
+      if (availableSamples + outLen > maxAllowedSamples) {
+        const dropCount = (availableSamples + outLen) - Math.floor(nativeRate * 0.08);
+        if (dropCount > 0 && dropCount <= availableSamples) {
+          readPtr = (readPtr + dropCount) % RING_CAPACITY;
+          availableSamples -= dropCount;
+        } else {
+          readPtr = writePtr;
+          availableSamples = 0;
+        }
+      }
+
+      for (let i = 0; i < outLen; i++) {
         const pos = i / ratio;
         const idx = Math.floor(pos);
         const frac = pos - idx;
-        const s0 = (idx === 0) ? lastSample : raw16k[idx - 1];
-        const s1 = raw16k[idx];
-        upsampled[i] = s0 + frac * (s1 - s0);
+        const s0 = (idx === 0) ? prevSample : ULAW_TABLE[payload[idx - 1]];
+        const s1 = ULAW_TABLE[payload[idx]];
+        const interpolated = s0 + frac * (s1 - s0);
+
+        ringBuffer[writePtr] = interpolated;
+        writePtr = (writePtr + 1) % RING_CAPACITY;
       }
-      lastSample = raw16k[inSamples - 1];
+      prevSample = ULAW_TABLE[payload[inLen - 1]];
+      availableSamples += outLen;
+    }
 
-      // 直接以手機原生取樣率建立 Buffer，避開 iOS Safari 有 Bug 嘅內置重採樣器
-      const audioBuffer = audioCtx.createBuffer(1, outSamples, nativeRate);
-      audioBuffer.copyToChannel(upsampled, 0);
+    // 手機發送緩衝：累積 2 次 2048 (即 4096 樣本 ~85ms) 發送一包 16-bit PCM 給 ESP32 (維持原本完美表現)
+    let txAccum = new Float32Array(4096);
+    let txAccumIdx = 0;
 
-      const source = audioCtx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioCtx.destination);
-
-      const currentTime = audioCtx.currentTime;
-      // 收緊延遲上限至 0.18 秒：一旦有積壓立即貼緊最新時間軸播放
-      if (nextStartTime < currentTime) {
-        nextStartTime = currentTime + 0.03;
-      } else if ((nextStartTime - currentTime) > 0.18) {
-        nextStartTime = currentTime + 0.03;
+    function sendMicChunk(inputChunk, inputSampleRate) {
+      for (let i = 0; i < inputChunk.length; i++) {
+        txAccum[txAccumIdx++] = inputChunk[i];
+        if (txAccumIdx >= 4096) {
+          const pcm16 = downsampleTo16k(txAccum, inputSampleRate);
+          const binaryPayload = new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength);
+          client.publish(TOPIC_PHONE_TX, binaryPayload);
+          txAccumIdx = 0;
+          txCount++;
+          updateDebug();
+        }
       }
-
-      source.start(nextStartTime);
-      nextStartTime += audioBuffer.duration;
     }
 
     function downsampleTo16k(float32Buffer, inputSampleRate) {
@@ -231,33 +293,13 @@
     function startTalking() {
       if (!client || !client.connected || isTalking) return;
       isTalking = true;
+      txAccumIdx = 0;
+      // 清空接收緩衝
+      readPtr = writePtr;
+      availableSamples = 0;
       pttBtn.classList.add('active');
       statusText.innerText = "正在通話中...";
-
-      if (audioCtx.state === 'suspended') audioCtx.resume();
-
-      const source = audioCtx.createMediaStreamSource(micStream);
-      scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
-
-      silencer = audioCtx.createGain();
-      silencer.gain.value = 0;
-
-      scriptNode.onaudioprocess = (e) => {
-        if (!isTalking) return;
-
-        const inputData = e.inputBuffer.getChannelData(0);
-        const pcm16 = downsampleTo16k(inputData, audioCtx.sampleRate);
-
-        const binaryPayload = new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength);
-        client.publish(TOPIC_PHONE_TX, binaryPayload);
-
-        txCount++;
-        updateDebug();
-      };
-
-      source.connect(scriptNode);
-      scriptNode.connect(silencer);
-      silencer.connect(audioCtx.destination);
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
     }
 
     function stopTalking() {
@@ -265,15 +307,6 @@
       isTalking = false;
       pttBtn.classList.remove('active');
       statusText.innerText = "通話結束，靜音待命中";
-
-      if (scriptNode) {
-        scriptNode.disconnect();
-        scriptNode = null;
-      }
-      if (silencer) {
-        silencer.disconnect();
-        silencer = null;
-      }
     }
   </script>
 </body>
