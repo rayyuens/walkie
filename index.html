@@ -1,277 +1,1114 @@
 <!DOCTYPE html>
 <html lang="zh-HK">
+
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>ESP32 對講機 - v6.0 完美雙向版</title>
-  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background-color: #121212;
-      color: #fff;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      margin: 0;
-      user-select: none;
-      -webkit-user-select: none;
-    }
-    .ver { font-size: 13px; color: #ffeb3b; margin-bottom: 8px; font-weight: bold; }
-    .status {
-      margin-bottom: 20px;
-      font-size: 16px;
-      color: #ccc;
-      padding: 0 20px;
-      text-align: center;
-    }
-    .debug {
-      margin-top: 25px;
-      font-size: 13px;
-      color: #2ecc71;
-      font-family: monospace;
-      background: #222;
-      padding: 8px 14px;
-      border-radius: 6px;
-    }
-    #initBtn {
-      padding: 16px 32px;
-      font-size: 18px;
-      font-weight: bold;
-      border-radius: 8px;
-      border: none;
-      background: #3498db;
-      color: white;
-      cursor: pointer;
-    }
-    #pttBtn {
-      width: 220px;
-      height: 220px;
-      border-radius: 50%;
-      border: none;
-      background: #e74c3c;
-      color: white;
-      font-size: 24px;
-      font-weight: bold;
-      box-shadow: 0 10px 25px rgba(231, 76, 60, 0.4);
-      display: none;
-      touch-action: none;
-    }
-    #pttBtn:active, #pttBtn.active {
-      background: #c0392b;
-      transform: scale(0.96);
-    }
-  </style>
+
+<meta charset="UTF-8">
+
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0, user-scalable=no">
+
+<title>ESP32 Walkie Talkie v7.0</title>
+
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+<style>
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+
+  background: #121212;
+
+  color: white;
+
+  display: flex;
+
+  flex-direction: column;
+
+  align-items: center;
+
+  justify-content: center;
+
+  min-height: 100vh;
+
+  margin: 0;
+
+  padding: 20px;
+
+  user-select: none;
+
+  -webkit-user-select: none;
+}
+
+.ver {
+
+  font-size: 14px;
+
+  color: #ffeb3b;
+
+  margin-bottom: 12px;
+
+  font-weight: bold;
+
+  text-align: center;
+}
+
+.status {
+
+  margin-bottom: 25px;
+
+  font-size: 15px;
+
+  color: #ccc;
+
+  text-align: center;
+
+  line-height: 1.6;
+}
+
+.debug {
+
+  margin-top: 25px;
+
+  font-size: 12px;
+
+  color: #2ecc71;
+
+  font-family: monospace;
+
+  background: #222;
+
+  padding: 12px 16px;
+
+  border-radius: 8px;
+
+  text-align: center;
+
+  line-height: 1.8;
+}
+
+#initBtn {
+
+  padding: 16px 32px;
+
+  font-size: 18px;
+
+  font-weight: bold;
+
+  border-radius: 8px;
+
+  border: none;
+
+  background: #3498db;
+
+  color: white;
+
+  cursor: pointer;
+}
+
+#initBtn:disabled {
+
+  opacity: 0.5;
+}
+
+#pttBtn {
+
+  width: 220px;
+
+  height: 220px;
+
+  border-radius: 50%;
+
+  border: none;
+
+  background: #e74c3c;
+
+  color: white;
+
+  font-size: 24px;
+
+  font-weight: bold;
+
+  box-shadow:
+    0 10px 25px rgba(231, 76, 60, 0.4);
+
+  display: none;
+
+  touch-action: none;
+
+  -webkit-tap-highlight-color: transparent;
+}
+
+#pttBtn:active,
+#pttBtn.active {
+
+  background: #c0392b;
+
+  transform: scale(0.96);
+}
+
+.info {
+
+  margin-top: 20px;
+
+  color: #888;
+
+  font-size: 12px;
+
+  text-align: center;
+
+  line-height: 1.8;
+}
+
+</style>
+
 </head>
+
 <body>
 
-  <div class="ver">v6.0 完美雙向版 (還原手機發送 + 8kHz 極速接收)</div>
-  <div class="status" id="statusText">請先點擊下方按鈕啟動音訊</div>
-  <button id="initBtn">1. 啟用對講機</button>
-  <button id="pttBtn">按住通話 (PTT)</button>
-  <div class="debug" id="debugText">TX: 0 包 | RX: 0 包</div>
+<div class="ver">
 
-  <script>
-    const MQTT_BROKER = "wss://broker.hivemq.com:8884/mqtt";
-    const TOPIC_ESP32_TX = "ray_walkie_hk/esp32_tx";
-    const TOPIC_PHONE_TX = "ray_walkie_hk/phone_tx";
-    const ESP_TX_RATE = 8000;      // ESP32 發送過來的語音為 8kHz 輕量封包
-    const PHONE_TX_RATE = 16000;   // 手機發送給 ESP32 維持完美 16kHz
+  ESP32 WALKIE TALKIE v7.0
 
-    let client = null;
-    let audioCtx = null;
-    let micStream = null;
-    let scriptNode = null;
-    let silencer = null;
-    let isTalking = false;
-    let nextStartTime = 0;
-    let lastSample = 0;
-    let txCount = 0;
-    let rxCount = 0;
+  <br>
 
-    const initBtn = document.getElementById('initBtn');
-    const pttBtn = document.getElementById('pttBtn');
-    const statusText = document.getElementById('statusText');
-    const debugText = document.getElementById('debugText');
+  Low Latency / Noise Reduction / Stable Audio
 
-    function updateDebug() {
-      debugText.innerText = `TX (發送): ${txCount} 包 | RX (接收): ${rxCount} 包`;
-    }
+</div>
 
-    initBtn.onclick = async () => {
-      initBtn.disabled = true;
-      statusText.innerText = "正在取得麥克風授權...";
+<div class="status" id="statusText">
 
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: false,
-            autoGainControl: false
-          }
-        });
+  請先啟動音訊系統
 
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        if (audioCtx.state === 'suspended') {
-          await audioCtx.resume();
-        }
+</div>
 
-        statusText.innerText = `音訊就緒 (${audioCtx.sampleRate}Hz)，正在連 HiveMQ...`;
+<button id="initBtn">
 
-        client = mqtt.connect(MQTT_BROKER, {
-          clientId: "iPhone_HK_" + Math.random().toString(16).substr(2, 8),
-          clean: true
-        });
+  1. 啟用對講機
 
-        client.on('connect', () => {
-          statusText.innerText = "已連線！放開按鈕收聽，按住通話";
-          initBtn.style.display = 'none';
-          pttBtn.style.display = 'block';
-          client.subscribe(TOPIC_ESP32_TX);
-        });
+</button>
 
-        client.on('message', (topic, payload) => {
-          if (topic === TOPIC_ESP32_TX && !isTalking) {
-            rxCount++;
-            updateDebug();
-            playIncomingPCM(payload);
-          }
-        });
+<button id="pttBtn">
 
-        client.on('error', (err) => {
-          statusText.innerText = "MQTT 錯誤: " + err.message;
-        });
+  按住通話 (PTT)
 
-      } catch (err) {
-        statusText.innerText = "授權錯誤: " + err.name + " - " + err.message;
-        initBtn.disabled = false;
+</button>
+
+<div class="debug" id="debugText">
+
+  TX: 0 packets
+
+  <br>
+
+  RX: 0 packets
+
+  <br>
+
+  Buffer: 0 ms
+
+</div>
+
+<div class="info">
+
+  ESP32 → Phone: 8kHz PCM
+
+  <br>
+
+  Phone → ESP32: 16kHz PCM
+
+  <br>
+
+  MQTT: HiveMQ WebSocket
+
+</div>
+
+<script>
+
+// =====================================================
+// 1. CONFIGURATION
+// =====================================================
+
+const MQTT_BROKER =
+  "wss://broker.hivemq.com:8884/mqtt";
+
+const TOPIC_ESP32_TX =
+  "ray_walkie_hk/esp32_tx";
+
+const TOPIC_PHONE_TX =
+  "ray_walkie_hk/phone_tx";
+
+// ESP32 -> Phone
+const ESP_TX_RATE = 8000;
+
+// Phone -> ESP32
+const PHONE_TX_RATE = 16000;
+
+// Playback jitter buffer
+const PLAYBACK_BUFFER_MS = 40;
+
+// =====================================================
+// 2. GLOBAL VARIABLES
+// =====================================================
+
+let client = null;
+
+let audioCtx = null;
+
+let micStream = null;
+
+let micSource = null;
+
+let scriptNode = null;
+
+let silencer = null;
+
+let playerNode = null;
+
+let isTalking = false;
+
+let txCount = 0;
+
+let rxCount = 0;
+
+// =====================================================
+// 3. DOM
+// =====================================================
+
+const initBtn =
+  document.getElementById("initBtn");
+
+const pttBtn =
+  document.getElementById("pttBtn");
+
+const statusText =
+  document.getElementById("statusText");
+
+const debugText =
+  document.getElementById("debugText");
+
+// =====================================================
+// 4. DEBUG DISPLAY
+// =====================================================
+
+function updateDebug() {
+
+  let bufferedMs = 0;
+
+  if (playerNode) {
+
+    bufferedMs =
+      playerNode.port.__bufferedSamples || 0;
+
+    bufferedMs =
+      Math.round(
+        bufferedMs / ESP_TX_RATE * 1000
+      );
+  }
+
+  debugText.innerHTML =
+
+    `TX: ${txCount} packets<br>` +
+
+    `RX: ${rxCount} packets<br>` +
+
+    `Buffer: ${bufferedMs} ms`;
+}
+
+// =====================================================
+// 5. AUDIOWORKLET PROCESSOR
+// =====================================================
+
+// This processor continuously plays incoming PCM.
+// No individual AudioBufferSourceNode is created
+// for every MQTT packet.
+
+const workletCode = `
+
+class PCMPlayer extends AudioWorkletProcessor {
+
+  constructor() {
+
+    super();
+
+    this.bufferSize = 16384;
+
+    this.buffer = new Int16Array(
+      this.bufferSize
+    );
+
+    this.readIndex = 0;
+
+    this.writeIndex = 0;
+
+    this.count = 0;
+
+    this.phase = 0;
+
+    this.step = 8000 / sampleRate;
+
+    // Wait for 40ms before starting playback.
+    this.startThreshold = 320;
+
+    this.started = false;
+
+    this.port.onmessage = (event) => {
+
+      const incoming = new Int16Array(
+        event.data
+      );
+
+      // If excessive audio accumulates,
+      // discard older samples.
+
+      if (this.count > 1600) {
+
+        const drop = this.count - 800;
+
+        this.readIndex =
+          (this.readIndex + drop) %
+          this.bufferSize;
+
+        this.count -= drop;
       }
+
+      // Prevent ring buffer overflow.
+
+      if (
+        this.count + incoming.length >
+        this.bufferSize
+      ) {
+
+        const drop =
+          this.count +
+          incoming.length -
+          this.bufferSize;
+
+        this.readIndex =
+          (this.readIndex + drop) %
+          this.bufferSize;
+
+        this.count -= drop;
+      }
+
+      // Copy incoming PCM.
+
+      for (
+        let i = 0;
+        i < incoming.length;
+        i++
+      ) {
+
+        this.buffer[this.writeIndex] =
+          incoming[i];
+
+        this.writeIndex =
+          (this.writeIndex + 1) %
+          this.bufferSize;
+      }
+
+      this.count += incoming.length;
+
     };
 
-    // 接收 ESP32 的 8kHz 16-bit PCM，平滑插值升頻至手機原生 48kHz 播放
-    function playIncomingPCM(payload) {
-      if (!audioCtx) return;
-      if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
 
-      const inSamples = Math.floor(payload.byteLength / 2);
-      if (inSamples === 0) return;
+  process(inputs, outputs) {
 
-      const dataView = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-      const raw8k = new Float32Array(inSamples);
+    const output = outputs[0][0];
 
-      for (let i = 0; i < inSamples; i++) {
-        const int16 = dataView.getInt16(i * 2, true);
-        raw8k[i] = int16 / 32768.0;
+    output.fill(0);
+
+    // Initial jitter buffer.
+
+    if (!this.started) {
+
+      if (
+        this.count < this.startThreshold
+      ) {
+
+        return true;
       }
 
-      const nativeRate = audioCtx.sampleRate;
-      const ratio = nativeRate / ESP_TX_RATE;
-      const outSamples = Math.floor(inSamples * ratio);
-      const upsampled = new Float32Array(outSamples);
-
-      for (let i = 0; i < outSamples; i++) {
-        const pos = i / ratio;
-        const idx = Math.floor(pos);
-        const frac = pos - idx;
-        const s0 = (idx === 0) ? lastSample : raw8k[idx - 1];
-        const s1 = raw8k[idx];
-        upsampled[i] = s0 + frac * (s1 - s0);
-      }
-      lastSample = raw8k[inSamples - 1];
-
-      const audioBuffer = audioCtx.createBuffer(1, outSamples, nativeRate);
-      audioBuffer.copyToChannel(upsampled, 0);
-
-      const source = audioCtx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(audioCtx.destination);
-
-      const currentTime = audioCtx.currentTime;
-      // 嚴格鎖定延遲上限在 0.15 秒內，一旦超出即刻跳到最新聲音
-      if (nextStartTime < currentTime || (nextStartTime - currentTime) > 0.15) {
-        nextStartTime = currentTime + 0.025;
-      }
-
-      source.start(nextStartTime);
-      nextStartTime += audioBuffer.duration;
+      this.started = true;
     }
 
-    // 【100% 還原 v3/v4 完美版手機發送邏輯】
-    function downsampleTo16k(float32Buffer, inputSampleRate) {
-      const ratio = inputSampleRate / PHONE_TX_RATE;
-      const newLength = Math.floor(float32Buffer.length / ratio);
-      const result = new Int16Array(newLength);
+    for (
+      let i = 0;
+      i < output.length;
+      i++
+    ) {
 
-      for (let i = 0; i < newLength; i++) {
-        const start = Math.floor(i * ratio);
-        const end = Math.min(Math.floor((i + 1) * ratio), float32Buffer.length);
-        let sum = 0;
-        let count = 0;
-        for (let j = start; j < end; j++) {
-          sum += float32Buffer[j];
-          count++;
+      if (this.count < 2) {
+
+        this.started = false;
+
+        this.phase = 0;
+
+        break;
+      }
+
+      const index0 = this.readIndex;
+
+      const index1 =
+        (this.readIndex + 1) %
+        this.bufferSize;
+
+      const s0 = this.buffer[index0];
+
+      const s1 = this.buffer[index1];
+
+      // Linear interpolation.
+      // Converts 8kHz PCM to native AudioContext rate.
+
+      const sample =
+        s0 +
+        (s1 - s0) * this.phase;
+
+      output[i] = sample / 32768;
+
+      this.phase += this.step;
+
+      const consume =
+        Math.floor(this.phase);
+
+      if (consume > 0) {
+
+        const actualConsume =
+          Math.min(
+            consume,
+            this.count - 1
+          );
+
+        this.readIndex =
+          (this.readIndex + actualConsume) %
+          this.bufferSize;
+
+        this.count -= actualConsume;
+
+        this.phase -= consume;
+
+        if (actualConsume < consume) {
+
+          this.started = false;
+
+          this.phase = 0;
+
+          break;
         }
-        let avg = count > 0 ? (sum / count) : float32Buffer[start];
-        let s = Math.max(-1, Math.min(1, avg * 1.3));
-        result[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
       }
-      return result;
+
     }
 
-    pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); });
-    pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); });
-    pttBtn.addEventListener('mousedown', (e) => { e.preventDefault(); startTalking(); });
-    pttBtn.addEventListener('mouseup', (e) => { e.preventDefault(); stopTalking(); });
+    return true;
 
-    function startTalking() {
-      if (!client || !client.connected || isTalking) return;
-      isTalking = true;
-      pttBtn.classList.add('active');
-      statusText.innerText = "正在通話中...";
+  }
 
-      if (audioCtx.state === 'suspended') audioCtx.resume();
+}
 
-      const source = audioCtx.createMediaStreamSource(micStream);
-      scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+registerProcessor(
+  "pcm-player",
+  PCMPlayer
+);
 
-      silencer = audioCtx.createGain();
-      silencer.gain.value = 0;
+`;
 
-      scriptNode.onaudioprocess = (e) => {
-        if (!isTalking) return;
+// =====================================================
+// 6. INITIALIZE AUDIOWORKLET
+// =====================================================
 
-        const inputData = e.inputBuffer.getChannelData(0);
-        const pcm16 = downsampleTo16k(inputData, audioCtx.sampleRate);
+async function setupAudioWorklet() {
 
-        const binaryPayload = new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength);
-        client.publish(TOPIC_PHONE_TX, binaryPayload);
+  if (!audioCtx.audioWorklet) {
 
-        txCount++;
+    throw new Error(
+      "AudioWorklet 不受目前瀏覽器支援，請使用最新版 Chrome 或 Safari"
+    );
+  }
+
+  const blob = new Blob(
+    [workletCode],
+    { type: "application/javascript" }
+  );
+
+  const workletURL =
+    URL.createObjectURL(blob);
+
+  try {
+
+    await audioCtx.audioWorklet.addModule(
+      workletURL
+    );
+
+  } finally {
+
+    URL.revokeObjectURL(workletURL);
+
+  }
+
+  playerNode = new AudioWorkletNode(
+    audioCtx,
+    "pcm-player",
+    {
+
+      numberOfInputs: 0,
+
+      numberOfOutputs: 1,
+
+      outputChannelCount: [1]
+
+    }
+  );
+
+  // Connect continuous PCM playback to speaker.
+
+  playerNode.connect(
+    audioCtx.destination
+  );
+
+  // Display buffer information.
+
+  playerNode.port.__bufferedSamples = 0;
+
+  // Update debug information periodically
+  // from incoming audio packets.
+}
+
+// =====================================================
+// 7. INITIALIZE WALKIE TALKIE
+// =====================================================
+
+initBtn.onclick = async () => {
+
+  initBtn.disabled = true;
+
+  statusText.innerText =
+    "正在啟動音訊系統...";
+
+  try {
+
+    // -------------------------------------------------
+    // MICROPHONE PERMISSION
+    // -------------------------------------------------
+
+    micStream =
+      await navigator.mediaDevices.getUserMedia({
+
+        audio: {
+
+          echoCancellation: true,
+
+          noiseSuppression: false,
+
+          autoGainControl: false
+
+        }
+
+      });
+
+    // -------------------------------------------------
+    // AUDIO CONTEXT
+    // -------------------------------------------------
+
+    audioCtx =
+      new (
+        window.AudioContext ||
+        window.webkitAudioContext
+      )({
+
+        latencyHint: "interactive"
+
+      });
+
+    if (audioCtx.state === "suspended") {
+
+      await audioCtx.resume();
+
+    }
+
+    // -------------------------------------------------
+    // AUDIOWORKLET
+    // -------------------------------------------------
+
+    await setupAudioWorklet();
+
+    statusText.innerText =
+
+      `Audio ready (${audioCtx.sampleRate}Hz). Connecting MQTT...`;
+
+    // -------------------------------------------------
+    // MQTT
+    // -------------------------------------------------
+
+    client = mqtt.connect(
+      MQTT_BROKER,
+      {
+
+        clientId:
+          "iPhone_HK_" +
+          Math.random().toString(16).slice(2, 10),
+
+        clean: true,
+
+        keepalive: 20,
+
+        reconnectPeriod: 1000,
+
+        connectTimeout: 10000
+
+      }
+    );
+
+    client.on("connect", () => {
+
+      statusText.innerText =
+        "已連線！放開按鈕收聽，按住通話";
+
+      initBtn.style.display = "none";
+
+      pttBtn.style.display = "block";
+
+      client.subscribe(
+        TOPIC_ESP32_TX
+      );
+
+    });
+
+    // -------------------------------------------------
+    // MQTT INCOMING MESSAGE
+    // -------------------------------------------------
+
+    client.on("message", (topic, payload) => {
+
+      if (
+        topic === TOPIC_ESP32_TX &&
+        !isTalking
+      ) {
+
+        rxCount++;
+
+        playIncomingPCM(payload);
+
         updateDebug();
-      };
 
-      source.connect(scriptNode);
-      scriptNode.connect(silencer);
-      silencer.connect(audioCtx.destination);
+      }
+
+    });
+
+    client.on("reconnect", () => {
+
+      statusText.innerText =
+        "MQTT 重新連線中...";
+
+    });
+
+    client.on("offline", () => {
+
+      statusText.innerText =
+        "MQTT 離線";
+
+    });
+
+    client.on("error", (err) => {
+
+      statusText.innerText =
+        "MQTT Error: " + err.message;
+
+    });
+
+  }
+
+  catch (err) {
+
+    statusText.innerText =
+
+      "初始化失敗: " +
+      err.name +
+      " - " +
+      err.message;
+
+    initBtn.disabled = false;
+
+  }
+
+};
+
+// =====================================================
+// 8. ESP32 -> PHONE PCM PLAYBACK
+// =====================================================
+
+function playIncomingPCM(payload) {
+
+  if (!audioCtx || !playerNode) {
+    return;
+  }
+
+  if (audioCtx.state === "suspended") {
+
+    audioCtx.resume();
+
+  }
+
+  const byteLength =
+    payload.byteLength;
+
+  // 16-bit PCM must contain even bytes.
+
+  const sampleCount =
+    Math.floor(byteLength / 2);
+
+  if (sampleCount === 0) {
+    return;
+  }
+
+  const dataView = new DataView(
+    payload.buffer,
+    payload.byteOffset,
+    payload.byteLength
+  );
+
+  const pcm = new Int16Array(
+    sampleCount
+  );
+
+  // Read little-endian PCM.
+
+  for (let i = 0; i < sampleCount; i++) {
+
+    pcm[i] =
+      dataView.getInt16(
+        i * 2,
+        true
+      );
+
+  }
+
+  // Send PCM to AudioWorklet.
+
+  playerNode.port.postMessage(
+    pcm.buffer,
+    [pcm.buffer]
+  );
+
+  // Estimate incoming buffer size.
+  // This is an estimate based on received data,
+  // not a precise real-time queue measurement.
+
+  updateDebug();
+
+}
+
+// =====================================================
+// 9. PHONE -> ESP32 DOWNSAMPLING
+// =====================================================
+
+// Keep original 16kHz phone transmission method.
+
+function downsampleTo16k(
+  float32Buffer,
+  inputSampleRate
+) {
+
+  const ratio =
+    inputSampleRate / PHONE_TX_RATE;
+
+  const newLength =
+    Math.floor(
+      float32Buffer.length / ratio
+    );
+
+  const result =
+    new Int16Array(newLength);
+
+  for (
+    let i = 0;
+    i < newLength;
+    i++
+  ) {
+
+    const start =
+      Math.floor(i * ratio);
+
+    const end =
+      Math.min(
+        Math.floor((i + 1) * ratio),
+        float32Buffer.length
+      );
+
+    let sum = 0;
+
+    let count = 0;
+
+    for (
+      let j = start;
+      j < end;
+      j++
+    ) {
+
+      sum += float32Buffer[j];
+
+      count++;
+
     }
 
-    function stopTalking() {
-      if (!isTalking) return;
-      isTalking = false;
-      pttBtn.classList.remove('active');
-      statusText.innerText = "通話結束，靜音待命中";
+    const avg =
+      count > 0
+        ? sum / count
+        : float32Buffer[start];
 
-      if (scriptNode) {
-        scriptNode.disconnect();
-        scriptNode = null;
-      }
-      if (silencer) {
-        silencer.disconnect();
-        silencer = null;
-      }
+    const s =
+      Math.max(
+        -1,
+        Math.min(1, avg * 1.3)
+      );
+
+    result[i] =
+      s < 0
+        ? s * 0x8000
+        : s * 0x7FFF;
+
+  }
+
+  return result;
+
+}
+
+// =====================================================
+// 10. START TALKING
+// =====================================================
+
+function startTalking() {
+
+  if (
+    !client ||
+    !client.connected ||
+    isTalking
+  ) {
+
+    return;
+
+  }
+
+  isTalking = true;
+
+  pttBtn.classList.add("active");
+
+  statusText.innerText =
+    "正在通話中...";
+
+  if (audioCtx.state === "suspended") {
+
+    audioCtx.resume();
+
+  }
+
+  // Microphone source
+
+  micSource =
+    audioCtx.createMediaStreamSource(
+      micStream
+    );
+
+  // Keep original 4096 frame size.
+  // This preserves the existing phone -> ESP32
+  // transmission behaviour.
+
+  scriptNode =
+    audioCtx.createScriptProcessor(
+      4096,
+      1,
+      1
+    );
+
+  // Mute local monitoring to prevent feedback.
+
+  silencer =
+    audioCtx.createGain();
+
+  silencer.gain.value = 0;
+
+  // -------------------------------------------------
+  // PHONE MICROPHONE PROCESSING
+  // -------------------------------------------------
+
+  scriptNode.onaudioprocess = (e) => {
+
+    if (!isTalking) {
+      return;
     }
-  </script>
+
+    if (!client || !client.connected) {
+      return;
+    }
+
+    const inputData =
+      e.inputBuffer.getChannelData(0);
+
+    const pcm16 =
+      downsampleTo16k(
+        inputData,
+        audioCtx.sampleRate
+      );
+
+    const binaryPayload =
+      new Uint8Array(
+        pcm16.buffer,
+        pcm16.byteOffset,
+        pcm16.byteLength
+      );
+
+    client.publish(
+      TOPIC_PHONE_TX,
+      binaryPayload
+    );
+
+    txCount++;
+
+    updateDebug();
+
+  };
+
+  micSource.connect(scriptNode);
+
+  scriptNode.connect(silencer);
+
+  silencer.connect(
+    audioCtx.destination
+  );
+
+}
+
+// =====================================================
+// 11. STOP TALKING
+// =====================================================
+
+function stopTalking() {
+
+  if (!isTalking) {
+    return;
+  }
+
+  isTalking = false;
+
+  pttBtn.classList.remove("active");
+
+  statusText.innerText =
+    "通話結束，靜音待命中";
+
+  if (scriptNode) {
+
+    scriptNode.disconnect();
+
+    scriptNode.onaudioprocess = null;
+
+    scriptNode = null;
+
+  }
+
+  if (micSource) {
+
+    micSource.disconnect();
+
+    micSource = null;
+
+  }
+
+  if (silencer) {
+
+    silencer.disconnect();
+
+    silencer = null;
+
+  }
+
+}
+
+// =====================================================
+// 12. PTT BUTTON EVENTS
+// =====================================================
+
+// Pointer events support touch and mouse.
+
+pttBtn.addEventListener(
+  "pointerdown",
+  (e) => {
+
+    e.preventDefault();
+
+    pttBtn.setPointerCapture(e.pointerId);
+
+    startTalking();
+
+  }
+);
+
+pttBtn.addEventListener(
+  "pointerup",
+  (e) => {
+
+    e.preventDefault();
+
+    stopTalking();
+
+  }
+);
+
+pttBtn.addEventListener(
+  "pointercancel",
+  () => {
+
+    stopTalking();
+
+  }
+);
+
+pttBtn.addEventListener(
+  "lostpointercapture",
+  () => {
+
+    stopTalking();
+
+  }
+);
+
+// Safety release if pointer leaves the button.
+
+window.addEventListener(
+  "blur",
+  () => {
+
+    stopTalking();
+
+  }
+);
+
+// =====================================================
+// 13. PAGE VISIBILITY
+// =====================================================
+
+document.addEventListener(
+  "visibilitychange",
+  () => {
+
+    if (document.hidden) {
+
+      stopTalking();
+
+    }
+
+  }
+);
+
+</script>
+
 </body>
 </html>
