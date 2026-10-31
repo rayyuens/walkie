@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>ESP32 對講機 - 極速版 v3</title>
+  <title>ESP32 對講機 - 高清版 v4</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
     body {
@@ -19,7 +19,7 @@
       user-select: none;
       -webkit-user-select: none;
     }
-    .ver { font-size: 13px; color: #f39c12; margin-bottom: 8px; font-weight: bold; }
+    .ver { font-size: 13px; color: #00e676; margin-bottom: 8px; font-weight: bold; }
     .status {
       margin-bottom: 20px;
       font-size: 16px;
@@ -67,14 +67,13 @@
 </head>
 <body>
 
-  <div class="ver">v3.0 HiveMQ 極速雙核版</div>
+  <div class="ver">v4.0 高清插值升頻 + 零延遲版</div>
   <div class="status" id="statusText">請先點擊下方按鈕啟動音訊</div>
   <button id="initBtn">1. 啟用對講機</button>
   <button id="pttBtn">按住通話 (PTT)</button>
   <div class="debug" id="debugText">TX: 0 包 | RX: 0 包</div>
 
   <script>
-    // 使用 HiveMQ 高速公共 WSS 節點
     const MQTT_BROKER = "wss://broker.hivemq.com:8884/mqtt";
     const TOPIC_ESP32_TX = "ray_walkie_hk/esp32_tx";
     const TOPIC_PHONE_TX = "ray_walkie_hk/phone_tx";
@@ -87,6 +86,7 @@
     let silencer = null;
     let isTalking = false;
     let nextStartTime = 0;
+    let lastSample = 0;
     let txCount = 0;
     let rxCount = 0;
 
@@ -149,33 +149,55 @@
       }
     };
 
+    // 核心升級：手動將 16kHz 線性插值平滑升頻至手機原生取樣率 (48kHz)，徹底消除 iOS 破音同接縫雜音
     function playIncomingPCM(payload) {
       if (!audioCtx) return;
       if (audioCtx.state === 'suspended') audioCtx.resume();
 
-      const sampleCount = Math.floor(payload.byteLength / 2);
-      if (sampleCount === 0) return;
+      const inSamples = Math.floor(payload.byteLength / 2);
+      if (inSamples === 0) return;
 
-      const float32Array = new Float32Array(sampleCount);
       const dataView = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      const raw16k = new Float32Array(inSamples);
 
-      for (let i = 0; i < sampleCount; i++) {
+      for (let i = 0; i < inSamples; i++) {
         const int16 = dataView.getInt16(i * 2, true);
-        float32Array[i] = int16 / 32768.0;
+        raw16k[i] = int16 / 32768.0;
       }
 
-      const audioBuffer = audioCtx.createBuffer(1, sampleCount, TARGET_SAMPLE_RATE);
-      audioBuffer.copyToChannel(float32Array, 0);
+      // 計算手機原生取樣率倍數 (例如 48000 / 16000 = 3 倍)
+      const nativeRate = audioCtx.sampleRate;
+      const ratio = nativeRate / TARGET_SAMPLE_RATE;
+      const outSamples = Math.floor(inSamples * ratio);
+      const upsampled = new Float32Array(outSamples);
+
+      // 線性插值平滑升頻 + 封包頭尾無縫銜接
+      for (let i = 0; i < outSamples; i++) {
+        const pos = i / ratio;
+        const idx = Math.floor(pos);
+        const frac = pos - idx;
+        const s0 = (idx === 0) ? lastSample : raw16k[idx - 1];
+        const s1 = raw16k[idx];
+        upsampled[i] = s0 + frac * (s1 - s0);
+      }
+      lastSample = raw16k[inSamples - 1];
+
+      // 直接以手機原生取樣率建立 Buffer，避開 iOS Safari 有 Bug 嘅內置重採樣器
+      const audioBuffer = audioCtx.createBuffer(1, outSamples, nativeRate);
+      audioBuffer.copyToChannel(upsampled, 0);
 
       const source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioCtx.destination);
 
       const currentTime = audioCtx.currentTime;
-      // 嚴格限制排隊延遲在 0.25 秒以內，一旦網路抖動積壓立即跳至最新聲音
-      if (nextStartTime < currentTime || (nextStartTime - currentTime) > 0.25) {
-        nextStartTime = currentTime + 0.04;
+      // 收緊延遲上限至 0.18 秒：一旦有積壓立即貼緊最新時間軸播放
+      if (nextStartTime < currentTime) {
+        nextStartTime = currentTime + 0.03;
+      } else if ((nextStartTime - currentTime) > 0.18) {
+        nextStartTime = currentTime + 0.03;
       }
+
       source.start(nextStartTime);
       nextStartTime += audioBuffer.duration;
     }
