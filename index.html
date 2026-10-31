@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>ESP32 對講機 - iPhone 端</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #1a1a1a;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .status {
+      margin-bottom: 30px;
+      font-size: 18px;
+      color: #aaa;
+    }
+    #initBtn {
+      padding: 14px 28px;
+      font-size: 18px;
+      font-weight: bold;
+      border-radius: 8px;
+      border: none;
+      background: #3498db;
+      color: white;
+      cursor: pointer;
+      margin-bottom: 20px;
+    }
+    #pttBtn {
+      width: 220px;
+      height: 220px;
+      border-radius: 50%;
+      border: none;
+      background: #e74c3c;
+      color: white;
+      font-size: 24px;
+      font-weight: bold;
+      box-shadow: 0 10px 25px rgba(231, 76, 60, 0.4);
+      display: none;
+      touch-action: none;
+    }
+    #pttBtn:active, #pttBtn.active {
+      background: #c0392b;
+      transform: scale(0.96);
+      box-shadow: 0 4px 15px rgba(231, 76, 60, 0.6);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="status" id="statusText">請先點擊下方按鈕啟動音訊</div>
+  <button id="initBtn">1. 啟用對講機 (獲取音訊權限)</button>
+  <button id="pttBtn">按住通話 (PTT)</button>
+
+  <script>
+    const MQTT_BROKER = "wss://broker.emqx.io:8084/mqtt";
+    const TOPIC_ESP32_TX = "my_walkie_talkie/esp32_tx"; // 收聽 ESP32
+    const TOPIC_PHONE_TX = "my_walkie_talkie/phone_tx"; // 傳送給 ESP32
+
+    let client = null;
+    let audioCtx = null;
+    let micStream = null;
+    let scriptNode = null;
+    let isTalking = false;
+
+    const initBtn = document.getElementById('initBtn');
+    const pttBtn = document.getElementById('pttBtn');
+    const statusText = document.getElementById('statusText');
+
+    initBtn.onclick = async () => {
+      initBtn.disabled = true;
+      statusText.innerText = "正在連接麥克風與伺服器...";
+
+      try {
+        // 1. 解鎖 iOS AudioContext
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        await audioCtx.resume();
+
+        // 2. 申請麥克風權限 (單聲道, 16kHz)
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            sampleRate: 16000,
+            echoCancellation: true,
+            noiseSuppression: true
+          }
+        });
+
+        // 3. 連接公共 MQTT Broker
+        client = mqtt.connect(MQTT_BROKER, {
+          clientId: "iPhone_" + Math.random().toString(16).substr(2, 8),
+          clean: true
+        });
+
+        client.on('connect', () => {
+          statusText.innerText = "已連線！放開按鈕收聽，按住通話";
+          initBtn.style.display = 'none';
+          pttBtn.style.display = 'block';
+
+          // 訂閱 ESP32 發來的音訊
+          client.subscribe(TOPIC_ESP32_TX);
+        });
+
+        // 接收 ESP32 音訊播放
+        client.on('message', (topic, payload) => {
+          if (topic === TOPIC_ESP32_TX && !isTalking) {
+            playIncomingPCM(payload);
+          }
+        });
+
+        client.on('error', (err) => {
+          statusText.innerText = "MQTT 連線失敗: " + err.message;
+        });
+
+      } catch (err) {
+        statusText.innerText = "授權錯誤: " + err.message;
+        initBtn.disabled = false;
+      }
+    };
+
+    // 播放來自 ESP32 的 16-bit PCM 二進制音訊
+    function playIncomingPCM(buffer) {
+      const int16Array = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 2);
+      const float32Array = new Float32Array(int16Array.length);
+      for (let i = 0; i < int16Array.length; i++) {
+        float32Array[i] = int16Array[i] / 32768.0;
+      }
+
+      const audioBuffer = audioCtx.createBuffer(1, float32Array.length, 16000);
+      audioBuffer.copyToChannel(float32Array, 0);
+
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioCtx.destination);
+      source.start();
+    }
+
+    // PTT 觸控邏輯 (Touchstart / Touchend)
+    pttBtn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      startTalking();
+    });
+
+    pttBtn.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      stopTalking();
+    });
+
+    function startTalking() {
+      if (!client || !client.connected) return;
+      isTalking = true;
+      pttBtn.classList.add('active');
+      statusText.innerText = "正在通話中...";
+
+      const source = audioCtx.createMediaStreamSource(micStream);
+      scriptNode = audioCtx.createScriptProcessor(512, 1, 1);
+
+      scriptNode.onaudioprocess = (e) => {
+        if (!isTalking) return;
+        const inputData = e.inputBuffer.getChannelData(0);
+        const pcm16 = new Int16Array(inputData.length);
+
+        for (let i = 0; i < inputData.length; i++) {
+          let s = Math.max(-1, Math.min(1, inputData[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+
+        // 發送二進制音訊至 MQTT
+        client.publish(TOPIC_PHONE_TX, Buffer.from(pcm16.buffer));
+      };
+
+      source.connect(scriptNode);
+      scriptNode.connect(audioCtx.destination);
+    }
+
+    function stopTalking() {
+      isTalking = false;
+      pttBtn.classList.remove('active');
+      statusText.innerText = "通話結束，靜音待命中";
+
+      if (scriptNode) {
+        scriptNode.disconnect();
+        scriptNode = null;
+      }
+    }
+  </script>
+</body>
+</html>
