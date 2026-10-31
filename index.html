@@ -23,9 +23,11 @@
       margin-bottom: 30px;
       font-size: 18px;
       color: #aaa;
+      padding: 0 20px;
+      text-align: center;
     }
     #initBtn {
-      padding: 14px 28px;
+      padding: 16px 32px;
       font-size: 18px;
       font-weight: bold;
       border-radius: 8px;
@@ -33,7 +35,6 @@
       background: #3498db;
       color: white;
       cursor: pointer;
-      margin-bottom: 20px;
     }
     #pttBtn {
       width: 220px;
@@ -63,8 +64,8 @@
 
   <script>
     const MQTT_BROKER = "wss://broker.emqx.io:8084/mqtt";
-    const TOPIC_ESP32_TX = "my_walkie_talkie/esp32_tx"; // 收聽 ESP32
-    const TOPIC_PHONE_TX = "my_walkie_talkie/phone_tx"; // 傳送給 ESP32
+    const TOPIC_ESP32_TX = "my_walkie_talkie/esp32_tx";
+    const TOPIC_PHONE_TX = "my_walkie_talkie/phone_tx";
 
     let client = null;
     let audioCtx = null;
@@ -78,24 +79,27 @@
 
     initBtn.onclick = async () => {
       initBtn.disabled = true;
-      statusText.innerText = "正在連接麥克風與伺服器...";
+      statusText.innerText = "正在取得麥克風授權...";
 
       try {
-        // 1. 解鎖 iOS AudioContext
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-        await audioCtx.resume();
-
-        // 2. 申請麥克風權限 (單聲道, 16kHz)
+        // 1. 簡化約束條件：移除 sampleRate: 16000，避免觸發 iOS Overconstrained 阻擋
         micStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             channelCount: 1,
-            sampleRate: 16000,
             echoCancellation: true,
             noiseSuppression: true
           }
         });
 
-        // 3. 連接公共 MQTT Broker
+        // 2. 初始化 AudioContext (強制 16kHz 以配合 ESP32 I2S)
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        if (audioCtx.state === 'suspended') {
+          await audioCtx.resume();
+        }
+
+        statusText.innerText = "正在連接 MQTT Broker...";
+
+        // 3. 連接 MQTT Broker
         client = mqtt.connect(MQTT_BROKER, {
           clientId: "iPhone_" + Math.random().toString(16).substr(2, 8),
           clean: true
@@ -106,11 +110,9 @@
           initBtn.style.display = 'none';
           pttBtn.style.display = 'block';
 
-          // 訂閱 ESP32 發來的音訊
           client.subscribe(TOPIC_ESP32_TX);
         });
 
-        // 接收 ESP32 音訊播放
         client.on('message', (topic, payload) => {
           if (topic === TOPIC_ESP32_TX && !isTalking) {
             playIncomingPCM(payload);
@@ -122,12 +124,11 @@
         });
 
       } catch (err) {
-        statusText.innerText = "授權錯誤: " + err.message;
+        statusText.innerText = "授權錯誤: " + err.name + " - " + err.message;
         initBtn.disabled = false;
       }
     };
 
-    // 播放來自 ESP32 的 16-bit PCM 二進制音訊
     function playIncomingPCM(buffer) {
       const int16Array = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 2);
       const float32Array = new Float32Array(int16Array.length);
@@ -144,7 +145,6 @@
       source.start();
     }
 
-    // PTT 觸控邏輯 (Touchstart / Touchend)
     pttBtn.addEventListener('touchstart', (e) => {
       e.preventDefault();
       startTalking();
@@ -174,7 +174,6 @@
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
-        // 發送二進制音訊至 MQTT
         client.publish(TOPIC_PHONE_TX, Buffer.from(pcm16.buffer));
       };
 
