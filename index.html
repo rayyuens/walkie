@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>ESP32 對講機 - iPhone 端</title>
+  <title>ESP32 對講機 - 低延遲版</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
     body {
@@ -25,7 +25,6 @@
       color: #aaa;
       padding: 0 20px;
       text-align: center;
-      line-height: 1.5;
     }
     .debug {
       margin-top: 25px;
@@ -59,16 +58,15 @@
     #pttBtn:active, #pttBtn.active {
       background: #c0392b;
       transform: scale(0.96);
-      box-shadow: 0 4px 15px rgba(231, 76, 60, 0.6);
     }
   </style>
 </head>
 <body>
 
   <div class="status" id="statusText">請先點擊下方按鈕啟動音訊</div>
-  <button id="initBtn">1. 啟用對講機 (獲取音訊權限)</button>
+  <button id="initBtn">1. 啟用對講機 (低延遲版)</button>
   <button id="pttBtn">按住通話 (PTT)</button>
-  <div class="debug" id="debugText">TX: 0 pkts | RX: 0 pkts</div>
+  <div class="debug" id="debugText">TX: 0 包 | RX: 0 包</div>
 
   <script>
     const MQTT_BROKER = "wss://broker.emqx.io:8084/mqtt";
@@ -100,7 +98,14 @@
       statusText.innerText = "正在取得麥克風授權...";
 
       try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // 關閉 iOS 自動增益與降噪造成的語音截斷 (Clipping)，保留原音
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: false,
+            autoGainControl: false
+          }
+        });
 
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === 'suspended') {
@@ -129,17 +134,12 @@
           }
         });
 
-        client.on('error', (err) => {
-          statusText.innerText = "MQTT 錯誤: " + err.message;
-        });
-
       } catch (err) {
         statusText.innerText = "授權錯誤: " + err.name + " - " + err.message;
         initBtn.disabled = false;
       }
     };
 
-    // 修復重點 1：用 DataView 安全讀取 Little-Endian 16-bit PCM，並加入時間軸排隊播放
     function playIncomingPCM(payload) {
       if (!audioCtx) return;
       if (audioCtx.state === 'suspended') audioCtx.resume();
@@ -151,12 +151,10 @@
       const dataView = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
 
       for (let i = 0; i < sampleCount; i++) {
-        // true 代表 Little-Endian (ESP32 記憶體格式)，徹底解決高低位錯位爆音
         const int16 = dataView.getInt16(i * 2, true);
         float32Array[i] = int16 / 32768.0;
       }
 
-      // 建立 16kHz 音訊 Buffer (瀏覽器會自動平滑升頻至 iPhone 的 48kHz 播放)
       const audioBuffer = audioCtx.createBuffer(1, sampleCount, TARGET_SAMPLE_RATE);
       audioBuffer.copyToChannel(float32Array, 0);
 
@@ -164,38 +162,38 @@
       source.buffer = audioBuffer;
       source.connect(audioCtx.destination);
 
-      // Jitter Buffer 排隊機制：防止音訊封包重疊造成劈啪聲
       const currentTime = audioCtx.currentTime;
-      if (nextStartTime < currentTime) {
-        nextStartTime = currentTime + 0.08; // 預留 80ms 緩衝讓聲音連續
+      // 如果落後當前時間，或者網路積壓超過 0.35 秒，立即重置時間軸消除延遲！
+      if (nextStartTime < currentTime || (nextStartTime - currentTime) > 0.35) {
+        nextStartTime = currentTime + 0.05;
       }
       source.start(nextStartTime);
       nextStartTime += audioBuffer.duration;
     }
 
-    // 修復重點 2：將 iPhone 的 48kHz/44.1kHz 即時降採樣至 16kHz，大幅縮小封包並對齊 ESP32 速度
+    // 平均值濾波降採樣：消除直接抽樣造成的尖銳破音
     function downsampleTo16k(float32Buffer, inputSampleRate) {
-      if (inputSampleRate === TARGET_SAMPLE_RATE) {
-        const res = new Int16Array(float32Buffer.length);
-        for (let i = 0; i < float32Buffer.length; i++) {
-          let s = Math.max(-1, Math.min(1, float32Buffer[i]));
-          res[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-        }
-        return res;
-      }
       const ratio = inputSampleRate / TARGET_SAMPLE_RATE;
-      const newLength = Math.round(float32Buffer.length / ratio);
+      const newLength = Math.floor(float32Buffer.length / ratio);
       const result = new Int16Array(newLength);
 
       for (let i = 0; i < newLength; i++) {
-        const idx = Math.min(Math.floor(i * ratio), float32Buffer.length - 1);
-        let s = Math.max(-1, Math.min(1, float32Buffer[idx]));
+        const start = Math.floor(i * ratio);
+        const end = Math.min(Math.floor((i + 1) * ratio), float32Buffer.length);
+        let sum = 0;
+        let count = 0;
+        for (let j = start; j < end; j++) {
+          sum += float32Buffer[j];
+          count++;
+        }
+        let avg = count > 0 ? (sum / count) : float32Buffer[start];
+        // 溫和放大 1.2 倍並限幅
+        let s = Math.max(-1, Math.min(1, avg * 1.2));
         result[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
       }
       return result;
     }
 
-    // 同時支援手機觸控與電腦滑鼠測試
     pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); });
     pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); });
     pttBtn.addEventListener('mousedown', (e) => { e.preventDefault(); startTalking(); });
@@ -210,8 +208,8 @@
       if (audioCtx.state === 'suspended') audioCtx.resume();
 
       const source = audioCtx.createMediaStreamSource(micStream);
-      // 48kHz 下 2048 點約 42ms，降採樣到 16kHz 後只有 ~682 點 (1364 bytes)，非常輕量
-      scriptNode = audioCtx.createScriptProcessor(2048, 1, 1);
+      // 改用 4096 區塊 (48kHz 下約 85ms 發一包 = 2730 bytes)，大幅提升 ESP32 接收流暢度
+      scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
 
       silencer = audioCtx.createGain();
       silencer.gain.value = 0;
