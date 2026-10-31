@@ -25,6 +25,7 @@
       color: #aaa;
       padding: 0 20px;
       text-align: center;
+      line-height: 1.5;
     }
     #initBtn {
       padding: 16px 32px;
@@ -64,13 +65,14 @@
 
   <script>
     const MQTT_BROKER = "wss://broker.emqx.io:8084/mqtt";
-    const TOPIC_ESP32_TX = "my_walkie_talkie/esp32_tx";
-    const TOPIC_PHONE_TX = "my_walkie_talkie/phone_tx";
+    const TOPIC_ESP32_TX = "my_walkie_talkie/esp32_tx"; // 接收 ESP32 傳來的語音
+    const TOPIC_PHONE_TX = "my_walkie_talkie/phone_tx"; // 發送給 ESP32 的語音
 
     let client = null;
     let audioCtx = null;
     let micStream = null;
     let scriptNode = null;
+    let silencer = null;
     let isTalking = false;
 
     const initBtn = document.getElementById('initBtn');
@@ -82,24 +84,18 @@
       statusText.innerText = "正在取得麥克風授權...";
 
       try {
-        // 1. 簡化約束條件：移除 sampleRate: 16000，避免觸發 iOS Overconstrained 阻擋
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true
-          }
-        });
+        // 1. 純布林值請求，徹底相容 iOS Safari
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-        // 2. 初始化 AudioContext (強制 16kHz 以配合 ESP32 I2S)
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        // 2. 解鎖 iOS AudioContext
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === 'suspended') {
           await audioCtx.resume();
         }
 
         statusText.innerText = "正在連接 MQTT Broker...";
 
-        // 3. 連接 MQTT Broker
+        // 3. 連接 EMQX 公共 Broker (WSS 8084)
         client = mqtt.connect(MQTT_BROKER, {
           clientId: "iPhone_" + Math.random().toString(16).substr(2, 8),
           clean: true
@@ -113,6 +109,7 @@
           client.subscribe(TOPIC_ESP32_TX);
         });
 
+        // 4. 接收並播放 ESP32 傳來的 PCM 音訊
         client.on('message', (topic, payload) => {
           if (topic === TOPIC_ESP32_TX && !isTalking) {
             playIncomingPCM(payload);
@@ -130,12 +127,14 @@
     };
 
     function playIncomingPCM(buffer) {
+      if (!audioCtx) return;
       const int16Array = new Int16Array(buffer.buffer, buffer.byteOffset, buffer.byteLength / 2);
       const float32Array = new Float32Array(int16Array.length);
       for (let i = 0; i < int16Array.length; i++) {
         float32Array[i] = int16Array[i] / 32768.0;
       }
 
+      // 建立 16kHz 音訊緩衝區
       const audioBuffer = audioCtx.createBuffer(1, float32Array.length, 16000);
       audioBuffer.copyToChannel(float32Array, 0);
 
@@ -145,6 +144,7 @@
       source.start();
     }
 
+    // PTT 觸控監聽
     pttBtn.addEventListener('touchstart', (e) => {
       e.preventDefault();
       startTalking();
@@ -156,16 +156,30 @@
     });
 
     function startTalking() {
-      if (!client || !client.connected) return;
+      if (!client || !client.connected) {
+        statusText.innerText = "MQTT 未連線";
+        return;
+      }
       isTalking = true;
       pttBtn.classList.add('active');
       statusText.innerText = "正在通話中...";
 
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+
       const source = audioCtx.createMediaStreamSource(micStream);
-      scriptNode = audioCtx.createScriptProcessor(512, 1, 1);
+      
+      // 使用 2048 緩衝大小，發包平穩不塞車
+      scriptNode = audioCtx.createScriptProcessor(2048, 1, 1);
+
+      // 靜音隔離節點：防止手機自錄自播產生回授與 Spike 爆音
+      silencer = audioCtx.createGain();
+      silencer.gain.value = 0;
 
       scriptNode.onaudioprocess = (e) => {
         if (!isTalking) return;
+
         const inputData = e.inputBuffer.getChannelData(0);
         const pcm16 = new Int16Array(inputData.length);
 
@@ -174,11 +188,14 @@
           pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
-        client.publish(TOPIC_PHONE_TX, Buffer.from(pcm16.buffer));
+        // 以二進制 Uint8Array 送出
+        const binaryPayload = new Uint8Array(pcm16.buffer);
+        client.publish(TOPIC_PHONE_TX, binaryPayload);
       };
 
       source.connect(scriptNode);
-      scriptNode.connect(audioCtx.destination);
+      scriptNode.connect(silencer);
+      silencer.connect(audioCtx.destination);
     }
 
     function stopTalking() {
@@ -189,6 +206,10 @@
       if (scriptNode) {
         scriptNode.disconnect();
         scriptNode = null;
+      }
+      if (silencer) {
+        silencer.disconnect();
+        silencer = null;
       }
     }
   </script>
