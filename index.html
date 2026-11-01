@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Web 對講機 - v7.0 雙機高清互講版</title>
+  <title>Web 對講機 - v8.0 全天候常駐版</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background-color: #101216;
+      background-color: #0b0d10;
       color: #fff;
       display: flex;
       flex-direction: column;
@@ -25,8 +25,31 @@
       background: rgba(0, 229, 255, 0.12);
       padding: 6px 14px;
       border-radius: 20px;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       font-weight: 600;
+    }
+    .badges {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 18px;
+      font-size: 12px;
+    }
+    .badge {
+      padding: 4px 10px;
+      border-radius: 6px;
+      background: #1c2026;
+      color: #78909c;
+      border: 1px solid #2c323b;
+    }
+    .badge.ok {
+      color: #00e676;
+      border-color: rgba(0, 230, 118, 0.4);
+      background: rgba(0, 230, 118, 0.08);
+    }
+    .badge.warn {
+      color: #ffab00;
+      border-color: rgba(255, 171, 0, 0.4);
+      background: rgba(255, 171, 0, 0.08);
     }
     .status {
       margin-bottom: 24px;
@@ -41,10 +64,10 @@
       font-size: 13px;
       color: #00e676;
       font-family: monospace;
-      background: #1c2026;
+      background: #15181e;
       padding: 10px 16px;
       border-radius: 8px;
-      border: 1px solid #2c323b;
+      border: 1px solid #262b33;
     }
     #initBtn {
       padding: 16px 34px;
@@ -80,19 +103,29 @@
       background: #00c853;
       box-shadow: 0 12px 30px rgba(0, 200, 83, 0.45);
     }
+    #pttBtn.offline {
+      background: #546e7a;
+      box-shadow: none;
+    }
   </style>
 </head>
 <body>
 
-  <div class="ver">v7.0 電話對電話 (16kHz 高清 DSP 降噪 + 極低延遲)</div>
-  <div class="status" id="statusText">請點擊下方按鈕啟動音訊與麥克風</div>
-  <button id="initBtn">1. 啟用對講機</button>
+  <div class="ver">v8.0 全天候常駐版 (防休眠 + 自動重連 + 音訊保活)</div>
+  
+  <div class="badges">
+    <div class="badge" id="wakeBadge">螢幕常亮: 未啟動</div>
+    <div class="badge" id="netBadge">網絡: 待命</div>
+    <div class="badge" id="audioBadge">音訊引擎: 待命</div>
+  </div>
+
+  <div class="status" id="statusText">請點擊下方按鈕啟動音訊與常駐保護</div>
+  <button id="initBtn">1. 啟用全天候對講機</button>
   <button id="pttBtn">按住通話 (PTT)</button>
   <div class="debug" id="debugText">本機 ID: ---- | TX: 0 | RX: 0</div>
 
   <script>
     const MQTT_BROKER = "wss://broker.hivemq.com:8884/mqtt";
-    // 所有電話共用同一個頻道，透過封包頭 4-byte ID 區分發送者
     const ROOM_TOPIC = "ray_walkie_hk/room_v7";
     const TARGET_RATE = 16000;
 
@@ -105,6 +138,8 @@
     let micStream = null;
     let scriptNode = null;
     let silencer = null;
+    let wakeLock = null;
+    let keepAliveTimer = null;
     let isTalking = false;
     let nextStartTime = 0;
     let lastSample = 0;
@@ -116,6 +151,9 @@
     const pttBtn = document.getElementById('pttBtn');
     const statusText = document.getElementById('statusText');
     const debugText = document.getElementById('debugText');
+    const wakeBadge = document.getElementById('wakeBadge');
+    const netBadge = document.getElementById('netBadge');
+    const audioBadge = document.getElementById('audioBadge');
 
     // 建立 G.711 u-law 解碼查找表 (8-bit -> Float32)
     const ULAW_DECODE = new Float32Array(256);
@@ -130,7 +168,6 @@
       }
     })();
 
-    // G.711 u-law 編碼函式 (16-bit Int -> 8-bit u-law)
     function linearToUlaw(sample) {
       const BIAS = 0x84;
       const CLIP = 32635;
@@ -140,7 +177,7 @@
       sample += BIAS;
 
       let exp = 7;
-      for (let expMask = 0x4000; (sample & expMask) === 0 && exp > 0; exp--, expMask >>= 1) {}
+      for (let expMask = 0x4000; (sample & expMask) == 0 && exp > 0; exp--, expMask >>= 1) {}
       let mant = (sample >> (exp + 3)) & 0x0F;
       return (~(sign | (exp << 4) | mant)) & 0xFF;
     }
@@ -150,12 +187,80 @@
     }
     updateDebug();
 
+    // ================= [修復 A] 螢幕常亮鎖定 (Screen Wake Lock API) =================
+    async function requestWakeLock() {
+      if ('wakeLock' in navigator) {
+        try {
+          wakeLock = await navigator.wakeLock.request('screen');
+          wakeBadge.innerText = "螢幕常亮: 已鎖定";
+          wakeBadge.className = "badge ok";
+          wakeLock.addEventListener('release', () => {
+            wakeBadge.innerText = "螢幕常亮: 已釋放";
+            wakeBadge.className = "badge warn";
+          });
+        } catch (err) {
+          wakeBadge.innerText = "螢幕常亮: 需手動設永不鎖屏";
+          wakeBadge.className = "badge warn";
+        }
+      } else {
+        wakeBadge.innerText = "螢幕常亮: 瀏覽器不支援";
+        wakeBadge.className = "badge warn";
+      }
+    }
+
+    // 當切出畫面再返回，或解鎖螢幕時，自動恢復常亮鎖與音訊引擎
+    document.addEventListener('visibilitychange', async () => {
+      if (document.visibilityState === 'visible') {
+        if (audioCtx) {
+          await requestWakeLock();
+          await ensureAudioActive();
+        }
+      }
+    });
+
+    // ================= [修復 C] 音訊引擎防掛起與每 20 秒無聲保活脈衝 =================
+    async function ensureAudioActive() {
+      if (!audioCtx) return;
+      if (audioCtx.state === 'suspended' || audioCtx.state === 'interrupted') {
+        try {
+          await audioCtx.resume();
+        } catch (e) {}
+      }
+      if (audioCtx.state === 'running') {
+        audioBadge.innerText = "音訊引擎: 常駐活躍";
+        audioBadge.className = "badge ok";
+      } else {
+        audioBadge.innerText = "音訊引擎: 點擊畫面喚醒";
+        audioBadge.className = "badge warn";
+      }
+    }
+
+    function startAudioKeepAlive() {
+      if (keepAliveTimer) clearInterval(keepAliveTimer);
+      // 每 20 秒播放 1 個極微弱無聲樣本，防止 iOS 長時間無聲將 AudioContext 休眠
+      keepAliveTimer = setInterval(() => {
+        if (!audioCtx) return;
+        ensureAudioActive();
+        if (audioCtx.state === 'running' && !isTalking) {
+          const silentBuf = audioCtx.createBuffer(1, 1, audioCtx.sampleRate);
+          const src = audioCtx.createBufferSource();
+          src.buffer = silentBuf;
+          src.connect(audioCtx.destination);
+          src.start();
+        }
+      }, 20000);
+    }
+
+    // 畫面任何觸碰都順便喚醒可能被 iOS 暫停的音訊
+    document.body.addEventListener('touchstart', () => {
+      if (audioCtx) ensureAudioActive();
+    }, { passive: true });
+
     initBtn.onclick = async () => {
       initBtn.disabled = true;
-      statusText.innerText = "正在啟動硬件降噪麥克風...";
+      statusText.innerText = "正在啟動硬件降噪麥克風與常駐保護...";
 
       try {
-        // 開啟 iOS / Android 原生硬件級回音消除、環境降噪與自動增益
         micStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
@@ -165,29 +270,55 @@
         });
 
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        if (audioCtx.state === 'suspended') {
-          await audioCtx.resume();
-        }
+        audioCtx.onstatechange = () => ensureAudioActive();
+        await ensureAudioActive();
+        startAudioKeepAlive();
+        await requestWakeLock();
 
         statusText.innerText = `音訊就緒 (${audioCtx.sampleRate}Hz)，正在連線伺服器...`;
 
+        // ================= [修復 B] MQTT 長連線保活與斷線極速自動重連 =================
         client = mqtt.connect(MQTT_BROKER, {
           clientId: "Phone_" + MY_ID_HEX + "_" + Math.random().toString(16).slice(2, 6),
           clean: true,
-          keepalive: 30
+          keepalive: 25,          // 每 25 秒發送心跳包防止 Router 切斷連線
+          reconnectPeriod: 2000,  // 一旦斷線，每 2 秒自動重連
+          connectTimeout: 10000
         });
 
         client.on('connect', () => {
-          statusText.innerText = "已連線！兩部電話可隨時按住紅掣互講";
+          netBadge.innerText = "網絡: 在線";
+          netBadge.className = "badge ok";
+          pttBtn.classList.remove('offline');
+          statusText.innerText = "已連線！支援多機群組廣播，隨時按住紅掣通話";
           initBtn.style.display = 'none';
           pttBtn.style.display = 'block';
           client.subscribe(ROOM_TOPIC, { qos: 0 });
         });
 
+        client.on('reconnect', () => {
+          netBadge.innerText = "網絡: 重連中...";
+          netBadge.className = "badge warn";
+          pttBtn.classList.add('offline');
+          statusText.innerText = "網絡閃斷，正在自動重新連線...";
+        });
+
+        client.on('offline', () => {
+          netBadge.innerText = "網絡: 離線";
+          netBadge.className = "badge warn";
+          pttBtn.classList.add('offline');
+          statusText.innerText = "網絡已中斷，等待自動恢復...";
+          if (isTalking) stopTalking();
+        });
+
+        client.on('close', () => {
+          netBadge.innerText = "網絡: 斷開";
+          netBadge.className = "badge warn";
+        });
+
         client.on('message', (topic, payload) => {
           if (topic !== ROOM_TOPIC || isTalking || payload.byteLength <= 4) return;
 
-          // 讀取頭 4 bytes 發送者 ID，如果是自己發出的封包則直接忽略
           const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
           const senderId = view.getUint32(0, true);
           if (senderId === MY_ID) return;
@@ -195,10 +326,9 @@
           rxCount++;
           updateDebug();
 
-          // 視覺提示：收到對方講話時按鈕變綠色
           pttBtn.classList.add('receiving');
           pttBtn.innerText = "對方講話中...";
-          statusText.innerText = `正在接收來自 [${senderId.toString(16).toUpperCase().slice(0, 4)}] 的語音...`;
+          statusText.innerText = `正在接收來自 [${senderId.toString(16).toUpperCase().padStart(8, '0').slice(0, 4)}] 的廣播...`;
           clearTimeout(rxTimeout);
           rxTimeout = setTimeout(() => {
             if (!isTalking) {
@@ -208,7 +338,7 @@
             }
           }, 300);
 
-          playIncomingUlaw( new Uint8Array(payload.buffer, payload.byteOffset + 4, payload.byteLength - 4) );
+          playIncomingUlaw(new Uint8Array(payload.buffer, payload.byteOffset + 4, payload.byteLength - 4));
         });
 
         client.on('error', (err) => {
@@ -221,10 +351,11 @@
       }
     };
 
-    // 播放收到的 16kHz u-law 音訊：插值升頻至手機原生 48kHz + 低延遲時間軸排隊
     function playIncomingUlaw(ulawBytes) {
       if (!audioCtx) return;
-      if (audioCtx.state === 'suspended') audioCtx.resume();
+      if (audioCtx.state !== 'running') {
+        audioCtx.resume();
+      }
 
       const inLen = ulawBytes.length;
       if (inLen === 0) return;
@@ -234,7 +365,6 @@
       const outLen = Math.floor(inLen * ratio);
       const upsampled = new Float32Array(outLen);
 
-      // 線性插值平滑升頻，徹底消除封包接縫處的咔噠聲
       for (let i = 0; i < outLen; i++) {
         const pos = i / ratio;
         const idx = Math.floor(pos);
@@ -245,7 +375,6 @@
       }
       lastSample = ULAW_DECODE[ulawBytes[inLen - 1]];
 
-      // 封包頭尾微幅淡入淡出 (De-click 保護)
       const fadeLen = Math.min(24, Math.floor(outLen / 10));
       for (let i = 0; i < fadeLen; i++) {
         const w = i / fadeLen;
@@ -260,11 +389,9 @@
       source.connect(audioCtx.destination);
 
       const now = audioCtx.currentTime;
-      // 嚴格將排隊緩衝鎖定在 40ms ~ 160ms 之間，杜絕延遲累積
       if (nextStartTime < now) {
-        nextStartTime = now + 0.04; // 初始 40ms Jitter 保護，保證聲音連續不破音
+        nextStartTime = now + 0.04;
       } else if (nextStartTime - now > 0.16) {
-        // 如果網絡突然湧入積壓超過 160ms，立即貼緊最新時間軸
         nextStartTime = now + 0.04;
       }
 
@@ -272,11 +399,9 @@
       nextStartTime += audioBuffer.duration;
     }
 
-    // 將手機 48kHz 音訊平均值濾波降頻至 16kHz 並壓縮為 u-law (連同 4-byte ID 標頭)
     function encodeAudioPacket(float32Buffer, inputRate) {
       const ratio = inputRate / TARGET_RATE;
       const sampleCount = Math.floor(float32Buffer.length / ratio);
-      // 頭 4 bytes 存放 MY_ID，後面存放 8-bit u-law 數據
       const packet = new Uint8Array(4 + sampleCount);
       const view = new DataView(packet.buffer);
       view.setUint32(0, MY_ID, true);
@@ -292,11 +417,10 @@
         }
         let avg = count > 0 ? (sum / count) : float32Buffer[start];
 
-        // 輕微軟性噪音門檻 (Soft Noise Gate)：過濾環境極細微底噪
         if (Math.abs(avg) < 0.004) {
           avg *= 0.2;
         } else {
-          avg *= 1.25; // 清晰人聲適度增幅
+          avg *= 1.25;
         }
 
         let clamped = Math.max(-1, Math.min(1, avg));
@@ -317,20 +441,19 @@
       isTalking = true;
       pttBtn.classList.remove('receiving');
       pttBtn.classList.add('active');
-      pttBtn.innerText = "正在發話中...";
-      statusText.innerText = "正在發送高清語音...";
+      pttBtn.innerText = "正在廣播中...";
+      statusText.innerText = "正在向所有在線電話發送高清語音...";
 
-      if (audioCtx.state === 'suspended') audioCtx.resume();
+      ensureAudioActive();
 
       const source = audioCtx.createMediaStreamSource(micStream);
-      // 2048 樣本在 48kHz 下僅 42.6ms 一包 (壓縮後每包只有 ~686 bytes)，超低延遲且極度穩定！
       scriptNode = audioCtx.createScriptProcessor(2048, 1, 1);
 
       silencer = audioCtx.createGain();
       silencer.gain.value = 0;
 
       scriptNode.onaudioprocess = (e) => {
-        if (!isTalking) return;
+        if (!isTalking || !client.connected) return;
         const inputData = e.inputBuffer.getChannelData(0);
         const packet = encodeAudioPacket(inputData, audioCtx.sampleRate);
         client.publish(ROOM_TOPIC, packet, { qos: 0 });
@@ -349,7 +472,7 @@
       isTalking = false;
       pttBtn.classList.remove('active');
       pttBtn.innerText = "按住通話 (PTT)";
-      statusText.innerText = "通話結束，放開收聽中";
+      statusText.innerText = client && client.connected ? "通話結束，放開收聽中" : "網絡重連中...";
 
       if (scriptNode) {
         scriptNode.disconnect();
