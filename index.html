@@ -323,6 +323,7 @@
     let sttStartPending = false;
     let sttStopRequested = false;
     let sttStartRetries = 0;
+    let sttNeedsFreshRecognition = false;
     let zeroVolumePackets = 0;
     let deviceHasSttConflict = false; // 自動記憶此部舊手機是否會搶咪
 
@@ -383,12 +384,19 @@
         return;
       }
 
-      recognition = new SpeechRecognition();
-      recognition.lang = 'zh-HK';
-      recognition.continuous = true;
-      recognition.interimResults = true;
+      createNativeRecognition();
+    }
 
-      recognition.onstart = () => {
+    function createNativeRecognition() {
+      const instance = new SpeechRecognition();
+      recognition = instance;
+      sttNeedsFreshRecognition = false;
+      instance.lang = 'zh-HK';
+      instance.continuous = true;
+      instance.interimResults = true;
+
+      instance.onstart = () => {
+        if (recognition !== instance) return;
         sttRunning = true;
         sttStartPending = false;
         sttStartRetries = 0;
@@ -396,7 +404,8 @@
         sttBadge.className = "badge ok";
       };
 
-      recognition.onresult = (event) => {
+      instance.onresult = (event) => {
+        if (recognition !== instance || !sttActiveForSender) return;
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i];
           if (result.isFinal) {
@@ -417,7 +426,8 @@
         }
       };
 
-      recognition.onerror = (event) => {
+      instance.onerror = (event) => {
+        if (recognition !== instance) return;
         if (event.error === "not-allowed" || event.error === "service-not-allowed" || event.error === "audio-capture") {
           sttStopRequested = true;
           sttEnabled = false;
@@ -428,7 +438,8 @@
           statusText.innerText = `語音辨識失敗: ${event.error}`;
         }
       };
-      recognition.onend = () => {
+      instance.onend = () => {
+        if (recognition !== instance) return;
         sttRunning = false;
         sttStartPending = false;
         if (sttActiveForSender && sttEnabled && !sttStopRequested &&
@@ -436,6 +447,7 @@
           sttBaseTranscript = currentTranscript;
           sttRunFinalResults = [];
           sttRunInterimResults = [];
+          sttNeedsFreshRecognition = true;
           clearTimeout(sttRestartTimer);
           sttRestartTimer = setTimeout(startRecognition, 300);
           return;
@@ -450,13 +462,15 @@
 
     function startRecognition() {
       if (!recognition || !sttActiveForSender || !sttEnabled || sttRunning || sttStartPending || sttStopRequested) return;
+      if (sttNeedsFreshRecognition) createNativeRecognition();
       sttStartPending = true;
       try {
         recognition.start();
       } catch (e) {
         sttStartPending = false;
+        sttNeedsFreshRecognition = true;
         sttStartRetries++;
-        if (sttStartRetries > 3) {
+        if (sttStartRetries > 8) {
           sttStopRequested = true;
           sttBadge.innerText = "粵語字幕: 啟動失敗";
           sttBadge.className = "badge warn";
@@ -465,7 +479,7 @@
           return;
         }
         clearTimeout(sttRestartTimer);
-        sttRestartTimer = setTimeout(startRecognition, 500);
+        sttRestartTimer = setTimeout(startRecognition, Math.min(500 * sttStartRetries, 2000));
       }
     }
 
