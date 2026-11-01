@@ -315,6 +315,14 @@
     let rxAssistStt = true; // 當對方(例如舊iPhone)講話而未能發送文字時，本機收聽期間順手幫對方聽寫
     let sttActiveForSender = null;
     let currentTranscript = "";
+    let sttBaseTranscript = "";
+    let sttRunFinalResults = [];
+    let sttRunInterimResults = [];
+    let sttRestartTimer = null;
+    let sttRunning = false;
+    let sttStartPending = false;
+    let sttStopRequested = false;
+    let sttStartRetries = 0;
     let zeroVolumePackets = 0;
     let deviceHasSttConflict = false; // 自動記憶此部舊手機是否會搶咪
 
@@ -381,19 +389,26 @@
       recognition.interimResults = true;
 
       recognition.onstart = () => {
+        sttRunning = true;
+        sttStartPending = false;
+        sttStartRetries = 0;
         sttBadge.innerText = sttActiveForSender === MY_ID_HEX ? "粵語字幕: 本機聽寫中" : `粵語字幕: 代[${sttActiveForSender}]聽寫中`;
         sttBadge.className = "badge ok";
       };
 
       recognition.onresult = (event) => {
-        let interim = "";
-        let finalStr = "";
-        for (let i = 0; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) finalStr += transcript;
-          else interim += transcript;
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i];
+          if (result.isFinal) {
+            sttRunFinalResults[i] = result[0].transcript;
+            sttRunInterimResults[i] = "";
+          } else {
+            sttRunInterimResults[i] = result[0].transcript;
+          }
         }
-        currentTranscript = (finalStr + interim).trim();
+        const runFinal = sttRunFinalResults.join("");
+        const interim = sttRunInterimResults.join("");
+        currentTranscript = `${sttBaseTranscript}${runFinal}${interim}`.trim();
         if (currentTranscript) {
           const targetSender = sttActiveForSender || MY_ID_HEX;
           const isMe = (targetSender === MY_ID_HEX);
@@ -402,8 +417,30 @@
         }
       };
 
-      recognition.onerror = () => {};
+      recognition.onerror = (event) => {
+        if (event.error === "not-allowed" || event.error === "service-not-allowed" || event.error === "audio-capture") {
+          sttStopRequested = true;
+          sttEnabled = false;
+          toggleSttBtn.innerText = "原生字幕: 關閉";
+          toggleSttBtn.className = "ctrl-btn";
+          sttBadge.innerText = "粵語字幕: 權限或麥克風錯誤";
+          sttBadge.className = "badge off";
+          statusText.innerText = `語音辨識失敗: ${event.error}`;
+        }
+      };
       recognition.onend = () => {
+        sttRunning = false;
+        sttStartPending = false;
+        if (sttActiveForSender && sttEnabled && !sttStopRequested &&
+            !(sttActiveForSender === MY_ID_HEX && deviceHasSttConflict)) {
+          sttBaseTranscript = currentTranscript;
+          sttRunFinalResults = [];
+          sttRunInterimResults = [];
+          clearTimeout(sttRestartTimer);
+          sttRestartTimer = setTimeout(startRecognition, 300);
+          return;
+        }
+        if (sttStopRequested || !sttEnabled || deviceHasSttConflict) commitSttTranscript();
         if (sttEnabled) {
           sttBadge.innerText = deviceHasSttConflict ? "粵語字幕: 由對方代聽寫" : "粵語字幕: 原生就緒";
           sttBadge.className = "badge ok";
@@ -411,24 +448,66 @@
       };
     }
 
+    function startRecognition() {
+      if (!recognition || !sttActiveForSender || !sttEnabled || sttRunning || sttStartPending || sttStopRequested) return;
+      sttStartPending = true;
+      try {
+        recognition.start();
+      } catch (e) {
+        sttStartPending = false;
+        sttStartRetries++;
+        if (sttStartRetries > 3) {
+          sttStopRequested = true;
+          sttBadge.innerText = "粵語字幕: 啟動失敗";
+          sttBadge.className = "badge warn";
+          statusText.innerText = "語音辨識無法重新啟動，請重新載入頁面再試";
+          commitSttTranscript();
+          return;
+        }
+        clearTimeout(sttRestartTimer);
+        sttRestartTimer = setTimeout(startRecognition, 500);
+      }
+    }
+
     function startSttFor(senderHex) {
       if (!sttEnabled || !recognition) return;
       if (senderHex === MY_ID_HEX && deviceHasSttConflict) return; // 舊機已標記發話防搶咪，交由接收端代勞
+      clearTimeout(sttRestartTimer);
       sttActiveForSender = senderHex;
       currentTranscript = "";
-      try { recognition.start(); } catch (e) {}
+      sttBaseTranscript = "";
+      sttRunFinalResults = [];
+      sttRunInterimResults = [];
+      sttStopRequested = false;
+      sttStartRetries = 0;
+      startRecognition();
     }
 
-    function stopSttAndCommit() {
-      if (!recognition) return;
-      try { recognition.stop(); } catch (e) {}
+    function commitSttTranscript() {
       if (currentTranscript && sttActiveForSender) {
         const isMe = (sttActiveForSender === MY_ID_HEX);
         upsertChatMessage(sttActiveForSender, currentTranscript, true, isMe);
         publishTextSubtitle(sttActiveForSender, currentTranscript, true);
-        currentTranscript = "";
       }
+      currentTranscript = "";
+      sttBaseTranscript = "";
+      sttRunFinalResults = [];
+      sttRunInterimResults = [];
       sttActiveForSender = null;
+      sttStopRequested = false;
+    }
+
+    function stopSttAndCommit() {
+      if (!recognition) return;
+      clearTimeout(sttRestartTimer);
+      sttStopRequested = true;
+      if (sttRunning || sttStartPending) {
+        try {
+          recognition.stop();
+          return;
+        } catch (e) {}
+      }
+      commitSttTranscript();
     }
 
     toggleSttBtn.onclick = () => {
@@ -819,6 +898,13 @@
       if (recognition) {
         try { recognition.abort(); } catch (e) {}
       }
+      clearTimeout(sttRestartTimer);
+      sttRunning = false;
+      sttStartPending = false;
+      sttActiveForSender = null;
+      currentTranscript = "";
+      sttBaseTranscript = "";
+      sttStopRequested = false;
       sttBadge.innerText = "粵語字幕: 舊機防搶咪保護";
       sttBadge.className = "badge warn";
 
