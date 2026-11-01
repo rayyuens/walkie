@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Web 對講機 - v10.0 廣東話字幕版</title>
+  <title>Web 對講機 - v11.0 全機型相容版</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
     body {
@@ -16,16 +16,16 @@
       justify-content: flex-start;
       min-height: 100vh;
       margin: 0;
-      padding: 16px 0;
+      padding: 14px 0;
       box-sizing: border-box;
       user-select: none;
       -webkit-user-select: none;
     }
     .ver {
-      font-size: 13px;
+      font-size: 12px;
       color: #00e5ff;
       background: rgba(0, 229, 255, 0.12);
-      padding: 5px 14px;
+      padding: 4px 12px;
       border-radius: 20px;
       margin-bottom: 8px;
       font-weight: 600;
@@ -40,7 +40,7 @@
       padding: 0 10px;
     }
     .badge {
-      padding: 4px 8px;
+      padding: 3px 8px;
       border-radius: 6px;
       background: #1c2026;
       color: #78909c;
@@ -66,36 +66,31 @@
       flex-wrap: wrap;
       justify-content: center;
       gap: 8px;
-      margin-bottom: 12px;
-      padding: 0 12px;
+      margin-bottom: 10px;
+      padding: 0 10px;
     }
     select, .ctrl-btn {
       background: #1c2026;
       color: #eceff1;
       border: 1px solid #37474f;
-      padding: 7px 12px;
+      padding: 6px 12px;
       border-radius: 8px;
       font-size: 13px;
       font-weight: 600;
       cursor: pointer;
     }
-    .ctrl-btn.mic-on {
-      border-color: #ff5252;
-      color: #ff8a80;
-      background: rgba(255, 82, 82, 0.1);
-    }
-    .ctrl-btn.mic-off {
+    .ctrl-btn.active-green {
       border-color: #00e676;
       color: #69f0ae;
-      background: rgba(0, 230, 118, 0.1);
+      background: rgba(0, 230, 118, 0.12);
     }
-    .ctrl-btn.stt-on {
-      border-color: #00e5ff;
-      color: #84ffff;
-      background: rgba(0, 229, 255, 0.1);
+    .ctrl-btn.active-red {
+      border-color: #ff5252;
+      color: #ff8a80;
+      background: rgba(255, 82, 82, 0.12);
     }
     .status {
-      margin-bottom: 14px;
+      margin-bottom: 12px;
       font-size: 14px;
       color: #cfd8dc;
       padding: 0 20px;
@@ -148,19 +143,18 @@
       background: #546e7a;
       box-shadow: none;
     }
-    /* 廣東話即時對話字幕框 */
     .chat-box {
       display: none;
       width: 90%;
       max-width: 400px;
       height: 170px;
-      margin-top: 16px;
+      margin-top: 14px;
       background: #14171d;
       border: 1px solid #262b33;
       border-radius: 10px;
       padding: 10px 12px;
       overflow-y: auto;
-      font-size: 14px;
+      font-size: 13px;
       line-height: 1.5;
       box-sizing: border-box;
     }
@@ -186,8 +180,8 @@
       font-style: italic;
     }
     .debug {
-      margin-top: 12px;
-      font-size: 12px;
+      margin-top: 10px;
+      font-size: 11px;
       color: #00e676;
       font-family: monospace;
       background: #15181e;
@@ -199,10 +193,10 @@
 </head>
 <body>
 
-  <div class="ver">v10.0 廣東話即時語音轉文字 (STT 字幕版)</div>
+  <div class="ver">v11.0 舊 iPhone 音訊修復版 (防搶咪 + 雙模常亮)</div>
   
   <div class="badges">
-    <div class="badge" id="wakeBadge">螢幕常亮: 未啟動</div>
+    <div class="badge" id="wakeBadge">螢幕常亮: 啟動中</div>
     <div class="badge" id="netBadge">網絡: 待命</div>
     <div class="badge" id="micBadge">麥克風: 未授權</div>
     <div class="badge" id="sttBadge">粵語字幕: 待命</div>
@@ -215,22 +209,26 @@
       <option value="ray_walkie_hk/ch3">CH 3 (備用)</option>
       <option value="ray_walkie_hk/ch4">CH 4 (測試)</option>
     </select>
-    <button class="ctrl-btn mic-on" id="toggleMicBtn">停止麥克風</button>
-    <button class="ctrl-btn stt-on" id="toggleSttBtn">字幕: 開啟</button>
+    <button class="ctrl-btn" id="toggleMicBtn">關閉麥克風 (純收聽)</button>
+    <button class="ctrl-btn active-green" id="toggleSttBtn">字幕: 已開啟</button>
   </div>
 
-  <div class="status" id="statusText">請點擊下方按鈕啟動音訊與廣東話字幕</div>
+  <div class="status" id="statusText">請點擊下方按鈕啟動對講機</div>
   <button id="initBtn">1. 啟用全天候對講機</button>
   <button id="pttBtn">按住通話 (PTT)</button>
 
-  <!-- 廣東話即時字幕紀錄區 -->
   <div class="chat-box" id="chatBox">
-    <div class="chat-msg" style="color:#607d8b; text-align:center; font-size:12px;">
-      --- 廣東話即時對話字幕 (按住 PTT 講話自動辨識) ---
+    <div class="chat-msg" style="color:#607d8b; text-align:center; font-size:11px;">
+      --- 廣東話即時對話字幕紀錄 ---
     </div>
   </div>
 
   <div class="debug" id="debugText">本機 ID: ---- | TX: 0 | RX: 0</div>
+
+  <!-- 舊款 iOS 專用隱藏保活影片 (防止舊機黑屏) -->
+  <video id="noSleepVideo" playsinline loop muted style="position:fixed; width:1px; height:1px; opacity:0.01; pointer-events:none;">
+    <source src="data:video/mp4;base64,AAAAHGZ0eXBtcDQyAAAAAG1wNDJpc29tYXZjMQAAADFtb292AAAAbG12aGQAAAAA1cA5ANXAOPQAAAPoAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAE10cmFrAAAAXHRraGQAAAAD1cA5ANXAOPQAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAABWRpbmYAAAAUaG1oZAAAAAAAAAAAAAAAJA==" type="video/mp4">
+  </video>
 
   <script>
     const MQTT_BROKER = "wss://broker.hivemq.com:8884/mqtt";
@@ -256,7 +254,6 @@
     let rxCount = 0;
     let rxTimeout = null;
 
-    // 語音轉文字 (Speech Recognition) 變數
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
     let sttEnabled = true;
@@ -275,6 +272,7 @@
     const toggleMicBtn = document.getElementById('toggleMicBtn');
     const toggleSttBtn = document.getElementById('toggleSttBtn');
     const chatBox = document.getElementById('chatBox');
+    const noSleepVideo = document.getElementById('noSleepVideo');
 
     const ULAW_DECODE = new Float32Array(256);
     (function initUlawTable() {
@@ -307,7 +305,32 @@
     }
     updateDebug();
 
-    // ================= 初始化香港廣東話 Speech-to-Text 引擎 =================
+    // ================= [修復 1] 支援舊款 iOS 的雙模常亮保活 =================
+    async function requestWakeLock() {
+      if ('wakeLock' in navigator) {
+        try {
+          wakeLock = await navigator.wakeLock.request('screen');
+          wakeBadge.innerText = "螢幕常亮: 系統鎖定";
+          wakeBadge.className = "badge ok";
+          return;
+        } catch (err) {}
+      }
+      // 舊款 iOS 降級方案：播放隱藏循環無聲影片阻擋鎖屏
+      try {
+        noSleepVideo.play().then(() => {
+          wakeBadge.innerText = "螢幕常亮: 影片保活";
+          wakeBadge.className = "badge ok";
+        }).catch(() => {
+          wakeBadge.innerText = "螢幕常亮: 需設永不鎖屏";
+          wakeBadge.className = "badge warn";
+        });
+      } catch (e) {
+        wakeBadge.innerText = "螢幕常亮: 需設永不鎖屏";
+        wakeBadge.className = "badge warn";
+      }
+    }
+
+    // ================= [修復 2] 智慧 STT 語音辨識（防搶咪） =================
     function initSpeechRecognition() {
       if (!SpeechRecognition) {
         sttBadge.innerText = "粵語字幕: 瀏覽器不支援";
@@ -317,9 +340,9 @@
       }
 
       recognition = new SpeechRecognition();
-      recognition.lang = 'zh-HK';        // 香港廣東話 (自動出香港繁體口語字)
+      recognition.lang = 'zh-HK';
       recognition.continuous = true;
-      recognition.interimResults = true; // 即時串流辨識結果
+      recognition.interimResults = true;
 
       recognition.onstart = () => {
         sttBadge.innerText = "粵語字幕: 聽寫中...";
@@ -331,30 +354,28 @@
         let finalStr = "";
         for (let i = 0; i < event.results.length; i++) {
           const transcript = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            finalStr += transcript;
-          } else {
-            interim += transcript;
-          }
+          if (event.results[i].isFinal) finalStr += transcript;
+          else interim += transcript;
         }
         currentTranscript = (finalStr + interim).trim();
         if (currentTranscript) {
-          // 更新自己畫面的即時字幕並透過 MQTT 同步給對方
           upsertChatMessage(MY_ID_HEX, currentTranscript, false, true);
           publishTextSubtitle(currentTranscript, false);
         }
       };
 
       recognition.onerror = (e) => {
-        // 忽略無講話 (no-speech) 或手動停止錯誤
-        if (e.error !== 'no-speech' && e.error !== 'aborted') {
-          sttBadge.innerText = "粵語字幕: " + e.error;
+        // 如果偵測到音訊被搶或阻斷，自動提示用戶
+        if (e.error === 'audio-capture' || e.error === 'not-allowed') {
+          sttBadge.innerText = "粵語字幕: 舊機搶咪請關閉";
           sttBadge.className = "badge warn";
         }
       };
 
       recognition.onend = () => {
-        if (sttEnabled) {
+        if (sttEnabled && isTalking) {
+          try { recognition.start(); } catch (e) {}
+        } else if (sttEnabled) {
           sttBadge.innerText = "粵語字幕: 就緒";
           sttBadge.className = "badge ok";
         }
@@ -364,22 +385,15 @@
       sttBadge.className = "badge ok";
     }
 
-    // 發送廣東話字幕到 MQTT 文字頻道
     function publishTextSubtitle(text, isFinal) {
       if (!client || !client.connected || !text) return;
-      const payload = JSON.stringify({
-        sender: MY_ID_HEX,
-        text: text,
-        final: isFinal
-      });
+      const payload = JSON.stringify({ sender: MY_ID_HEX, text: text, final: isFinal });
       client.publish(currentTextTopic, payload, { qos: 0 });
     }
 
-    // 在字幕框新增或更新對話訊息
     function upsertChatMessage(senderHex, text, isFinal, isMe) {
       const interimId = "interim_" + senderHex;
       let msgEl = document.getElementById(interimId);
-
       const nowStr = new Date().toTimeString().slice(0, 8);
 
       if (!msgEl) {
@@ -394,24 +408,23 @@
       msgEl.querySelector('.content').innerText = text + (isFinal ? "" : " ...");
 
       if (isFinal) {
-        msgEl.removeAttribute('id'); // 移除暫存 ID，鎖定成為正式歷史紀錄
+        msgEl.removeAttribute('id');
         msgEl.classList.remove('interim');
       }
-
       chatBox.scrollTop = chatBox.scrollHeight;
     }
 
-    // 開關廣東話字幕按鈕
+    // ================= [修復 3] 按鈕顏色與狀態文字修正 =================
     toggleSttBtn.onclick = () => {
       sttEnabled = !sttEnabled;
       if (sttEnabled) {
-        toggleSttBtn.innerText = "字幕: 開啟";
-        toggleSttBtn.className = "ctrl-btn stt-on";
+        toggleSttBtn.innerText = "字幕: 已開啟";
+        toggleSttBtn.className = "ctrl-btn active-green";
         sttBadge.innerText = "粵語字幕: 就緒";
         sttBadge.className = "badge ok";
       } else {
         if (recognition) { try { recognition.stop(); } catch (e) {} }
-        toggleSttBtn.innerText = "字幕: 關閉";
+        toggleSttBtn.innerText = "字幕: 已關閉";
         toggleSttBtn.className = "ctrl-btn";
         sttBadge.innerText = "粵語字幕: 已關閉";
         sttBadge.className = "badge off";
@@ -437,20 +450,16 @@
     async function enableMicrophone() {
       try {
         micStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
-          }
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
         });
         micEnabled = true;
         micBadge.innerText = "麥克風: 就緒";
         micBadge.className = "badge ok";
-        toggleMicBtn.innerText = "停止麥克風";
-        toggleMicBtn.className = "ctrl-btn mic-on";
+        toggleMicBtn.innerText = "關閉麥克風 (純收聽)";
+        toggleMicBtn.className = "ctrl-btn";
         pttBtn.classList.remove('disabled-mic');
         pttBtn.innerText = "按住通話 (PTT)";
-        statusText.innerText = "麥克風已啟用！按住紅掣講廣東話即出字幕";
+        statusText.innerText = "麥克風已就緒，隨時按住紅掣講話";
         return true;
       } catch (err) {
         statusText.innerText = "麥克風授權失敗: " + err.message;
@@ -465,21 +474,20 @@
         micStream = null;
       }
       micEnabled = false;
-      micBadge.innerText = "麥克風: 純收聽";
+      micBadge.innerText = "麥克風: 已關閉";
       micBadge.className = "badge off";
-      toggleMicBtn.innerText = "重開麥克風";
-      toggleMicBtn.className = "ctrl-btn mic-off";
+      toggleMicBtn.innerText = "開啟麥克風";
+      toggleMicBtn.className = "ctrl-btn active-green";
       pttBtn.classList.add('disabled-mic');
       pttBtn.innerText = "純收聽模式\n(已關閉麥克風)";
-      statusText.innerText = "已停止存取麥克風，目前為省電純收聽及看字幕模式";
+      statusText.innerText = "目前為純收聽模式，可收聽語音與字幕";
     }
 
     toggleMicBtn.onclick = async () => {
       await ensureAudioActive();
-      if (micEnabled) {
-        disableMicrophone();
-      } else {
-        statusText.innerText = "正在重新連接麥克風...";
+      if (micEnabled) disableMicrophone();
+      else {
+        statusText.innerText = "正在重新開啟麥克風...";
         await enableMicrophone();
       }
     };
@@ -497,23 +505,6 @@
         statusText.innerText = `已切換至 ${channelSelect.options[channelSelect.selectedIndex].text}`;
       }
     };
-
-    async function requestWakeLock() {
-      if ('wakeLock' in navigator) {
-        try {
-          wakeLock = await navigator.wakeLock.request('screen');
-          wakeBadge.innerText = "螢幕常亮: 已鎖定";
-          wakeBadge.className = "badge ok";
-          wakeLock.addEventListener('release', () => {
-            wakeBadge.innerText = "螢幕常亮: 已釋放";
-            wakeBadge.className = "badge warn";
-          });
-        } catch (err) {
-          wakeBadge.innerText = "螢幕常亮: 手動設永不鎖屏";
-          wakeBadge.className = "badge warn";
-        }
-      }
-    }
 
     document.addEventListener('visibilitychange', async () => {
       if (document.visibilityState === 'visible' && audioCtx) {
@@ -550,7 +541,7 @@
 
     initBtn.onclick = async () => {
       initBtn.disabled = true;
-      statusText.innerText = "正在啟動音訊引擎與廣東話辨識...";
+      statusText.innerText = "正在啟動音訊與連線...";
 
       const ok = await enableMicrophone();
       if (!ok) {
@@ -565,7 +556,7 @@
       startAudioKeepAlive();
       await requestWakeLock();
 
-      statusText.innerText = `音訊就緒 (${audioCtx.sampleRate}Hz)，正在連線伺服器...`;
+      statusText.innerText = `音訊就緒 (${audioCtx.sampleRate}Hz)，正在連線 HiveMQ...`;
 
       client = mqtt.connect(MQTT_BROKER, {
         clientId: "Phone_" + MY_ID_HEX + "_" + Math.random().toString(16).slice(2, 6),
@@ -602,7 +593,6 @@
       });
 
       client.on('message', (topic, payload) => {
-        // 1. 處理收到的廣東話文字字幕
         if (topic === currentTextTopic) {
           try {
             const data = JSON.parse(new TextDecoder().decode(payload));
@@ -613,7 +603,6 @@
           return;
         }
 
-        // 2. 處理收到的語音封包
         if (topic !== currentTopic || isTalking || payload.byteLength <= 4) return;
 
         const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
@@ -625,7 +614,7 @@
 
         pttBtn.classList.add('receiving');
         pttBtn.innerText = "對方講話中...";
-        statusText.innerText = `正在接收來自 [${senderId.toString(16).toUpperCase().padStart(8, '0').slice(0, 4)}] 的語音...`;
+        statusText.innerText = `正在接收 [${senderId.toString(16).toUpperCase().padStart(8, '0').slice(0, 4)}] 的語音...`;
         clearTimeout(rxTimeout);
         rxTimeout = setTimeout(() => {
           if (!isTalking) {
@@ -723,7 +712,7 @@
 
     function startTalking() {
       if (!micEnabled || !micStream) {
-        statusText.innerText = "請先點擊上方「重開麥克風」才可發話！";
+        statusText.innerText = "請先點擊上方「開啟麥克風」才可發話！";
         return;
       }
       if (!client || !client.connected || isTalking) return;
@@ -733,12 +722,12 @@
       pttBtn.classList.remove('receiving');
       pttBtn.classList.add('active');
       pttBtn.innerText = "正在廣播中...";
-      statusText.innerText = "正在發送語音及同步廣東話字幕...";
+      statusText.innerText = "正在發送語音...";
 
       ensureAudioActive();
       playRogerBeep(1500, 45);
 
-      // 啟動廣東話語音轉文字
+      // 只有在用戶明確開啟字幕時才啟動 STT
       if (sttEnabled && recognition) {
         try { recognition.start(); } catch (e) {}
       }
@@ -777,11 +766,9 @@
       }
       if (silencer) {
         silencer.disconnect();
-        silencer.disconnect();
         silencer = null;
       }
 
-      // 停止語音轉文字並鎖定最後一句字幕
       if (recognition) {
         try { recognition.stop(); } catch (e) {}
       }
