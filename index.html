@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Web 對講機 - v11.0 全機型相容版</title>
+  <title>Web 對講機 - v12.0 舊機深層修復版</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
     body {
@@ -16,7 +16,7 @@
       justify-content: flex-start;
       min-height: 100vh;
       margin: 0;
-      padding: 14px 0;
+      padding: 12px 0;
       box-sizing: border-box;
       user-select: none;
       -webkit-user-select: none;
@@ -84,13 +84,8 @@
       color: #69f0ae;
       background: rgba(0, 230, 118, 0.12);
     }
-    .ctrl-btn.active-red {
-      border-color: #ff5252;
-      color: #ff8a80;
-      background: rgba(255, 82, 82, 0.12);
-    }
     .status {
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       font-size: 14px;
       color: #cfd8dc;
       padding: 0 20px;
@@ -109,8 +104,8 @@
       box-shadow: 0 6px 20px rgba(41, 121, 255, 0.35);
     }
     #pttBtn {
-      width: 190px;
-      height: 190px;
+      width: 185px;
+      height: 185px;
       border-radius: 50%;
       border: 4px solid rgba(255, 255, 255, 0.15);
       background: #ff1744;
@@ -147,8 +142,8 @@
       display: none;
       width: 90%;
       max-width: 400px;
-      height: 170px;
-      margin-top: 14px;
+      height: 165px;
+      margin-top: 12px;
       background: #14171d;
       border: 1px solid #262b33;
       border-radius: 10px;
@@ -193,13 +188,13 @@
 </head>
 <body>
 
-  <div class="ver">v11.0 舊 iPhone 音訊修復版 (防搶咪 + 雙模常亮)</div>
+  <div class="ver">v12.0 舊 iPhone 錄音深層修復版 (隨按隨開咪 + 音量錶)</div>
   
   <div class="badges">
     <div class="badge" id="wakeBadge">螢幕常亮: 啟動中</div>
     <div class="badge" id="netBadge">網絡: 待命</div>
-    <div class="badge" id="micBadge">麥克風: 未授權</div>
-    <div class="badge" id="sttBadge">粵語字幕: 待命</div>
+    <div class="badge" id="micBadge">麥克風: 待命</div>
+    <div class="badge" id="sttBadge">粵語字幕: 已關閉</div>
   </div>
 
   <div class="controls-bar" id="controlsBar">
@@ -209,8 +204,9 @@
       <option value="ray_walkie_hk/ch3">CH 3 (備用)</option>
       <option value="ray_walkie_hk/ch4">CH 4 (測試)</option>
     </select>
-    <button class="ctrl-btn" id="toggleMicBtn">關閉麥克風 (純收聽)</button>
-    <button class="ctrl-btn active-green" id="toggleSttBtn">字幕: 已開啟</button>
+    <button class="ctrl-btn" id="toggleMicBtn">鎖定為純收聽</button>
+    <!-- 預設先關閉字幕以確保舊 iPhone 語音 100% 暢通，新機可隨時點擊開啟 -->
+    <button class="ctrl-btn" id="toggleSttBtn">字幕: 已關閉 (點擊開啟)</button>
   </div>
 
   <div class="status" id="statusText">請點擊下方按鈕啟動對講機</div>
@@ -223,9 +219,8 @@
     </div>
   </div>
 
-  <div class="debug" id="debugText">本機 ID: ---- | TX: 0 | RX: 0</div>
+  <div class="debug" id="debugText">ID: ---- | TX: 0 | RX: 0 | 咪音量: 0%</div>
 
-  <!-- 舊款 iOS 專用隱藏保活影片 (防止舊機黑屏) -->
   <video id="noSleepVideo" playsinline loop muted style="position:fixed; width:1px; height:1px; opacity:0.01; pointer-events:none;">
     <source src="data:video/mp4;base64,AAAAHGZ0eXBtcDQyAAAAAG1wNDJpc29tYXZjMQAAADFtb292AAAAbG12aGQAAAAA1cA5ANXAOPQAAAPoAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAE10cmFrAAAAXHRraGQAAAAD1cA5ANXAOPQAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAABWRpbmYAAAAUaG1oZAAAAAAAAAAAAAAAJA==" type="video/mp4">
   </video>
@@ -242,21 +237,25 @@
     let client = null;
     let audioCtx = null;
     let micStream = null;
-    let micEnabled = false;
+    let micSource = null;
     let scriptNode = null;
     let silencer = null;
+    let listenOnlyMode = false;
     let wakeLock = null;
     let keepAliveTimer = null;
     let isTalking = false;
+    let talkSessionId = 0;
     let nextStartTime = 0;
     let lastSample = 0;
     let txCount = 0;
     let rxCount = 0;
+    let currentMicLevel = 0;
     let rxTimeout = null;
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
-    let sttEnabled = true;
+    // 預設關閉 STT，徹底杜絕舊款 iPhone 開機即被 Siri 鎖死麥克風的問題
+    let sttEnabled = false;
     let currentTranscript = "";
 
     const initBtn = document.getElementById('initBtn');
@@ -301,11 +300,10 @@
     }
 
     function updateDebug() {
-      debugText.innerText = `ID: ${MY_ID_HEX} | 發送(TX): ${txCount} | 接收(RX): ${rxCount}`;
+      debugText.innerText = `ID: ${MY_ID_HEX} | TX: ${txCount} | RX: ${rxCount} | 咪音量: ${currentMicLevel}%`;
     }
     updateDebug();
 
-    // ================= [修復 1] 支援舊款 iOS 的雙模常亮保活 =================
     async function requestWakeLock() {
       if ('wakeLock' in navigator) {
         try {
@@ -315,25 +313,20 @@
           return;
         } catch (err) {}
       }
-      // 舊款 iOS 降級方案：播放隱藏循環無聲影片阻擋鎖屏
       try {
         noSleepVideo.play().then(() => {
           wakeBadge.innerText = "螢幕常亮: 影片保活";
           wakeBadge.className = "badge ok";
         }).catch(() => {
-          wakeBadge.innerText = "螢幕常亮: 需設永不鎖屏";
+          wakeBadge.innerText = "螢幕常亮: 手動設永不";
           wakeBadge.className = "badge warn";
         });
-      } catch (e) {
-        wakeBadge.innerText = "螢幕常亮: 需設永不鎖屏";
-        wakeBadge.className = "badge warn";
-      }
+      } catch (e) {}
     }
 
-    // ================= [修復 2] 智慧 STT 語音辨識（防搶咪） =================
     function initSpeechRecognition() {
       if (!SpeechRecognition) {
-        sttBadge.innerText = "粵語字幕: 瀏覽器不支援";
+        sttBadge.innerText = "粵語字幕: 不支援";
         sttBadge.className = "badge off";
         toggleSttBtn.style.display = 'none';
         return;
@@ -345,7 +338,7 @@
       recognition.interimResults = true;
 
       recognition.onstart = () => {
-        sttBadge.innerText = "粵語字幕: 聽寫中...";
+        sttBadge.innerText = "粵語字幕: 聽寫中";
         sttBadge.className = "badge ok";
       };
 
@@ -364,25 +357,12 @@
         }
       };
 
-      recognition.onerror = (e) => {
-        // 如果偵測到音訊被搶或阻斷，自動提示用戶
-        if (e.error === 'audio-capture' || e.error === 'not-allowed') {
-          sttBadge.innerText = "粵語字幕: 舊機搶咪請關閉";
-          sttBadge.className = "badge warn";
-        }
-      };
-
+      recognition.onerror = () => {};
       recognition.onend = () => {
         if (sttEnabled && isTalking) {
           try { recognition.start(); } catch (e) {}
-        } else if (sttEnabled) {
-          sttBadge.innerText = "粵語字幕: 就緒";
-          sttBadge.className = "badge ok";
         }
       };
-
-      sttBadge.innerText = "粵語字幕: 就緒";
-      sttBadge.className = "badge ok";
     }
 
     function publishTextSubtitle(text, isFinal) {
@@ -414,17 +394,17 @@
       chatBox.scrollTop = chatBox.scrollHeight;
     }
 
-    // ================= [修復 3] 按鈕顏色與狀態文字修正 =================
     toggleSttBtn.onclick = () => {
       sttEnabled = !sttEnabled;
       if (sttEnabled) {
-        toggleSttBtn.innerText = "字幕: 已開啟";
+        if (!recognition) initSpeechRecognition();
+        toggleSttBtn.innerText = "字幕: 已開啟 (舊機若無聲請關)";
         toggleSttBtn.className = "ctrl-btn active-green";
         sttBadge.innerText = "粵語字幕: 就緒";
         sttBadge.className = "badge ok";
       } else {
         if (recognition) { try { recognition.stop(); } catch (e) {} }
-        toggleSttBtn.innerText = "字幕: 已關閉";
+        toggleSttBtn.innerText = "字幕: 已關閉 (點擊開啟)";
         toggleSttBtn.className = "ctrl-btn";
         sttBadge.innerText = "粵語字幕: 已關閉";
         sttBadge.className = "badge off";
@@ -447,48 +427,59 @@
       } catch (e) {}
     }
 
-    async function enableMicrophone() {
-      try {
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-        });
-        micEnabled = true;
-        micBadge.innerText = "麥克風: 就緒";
-        micBadge.className = "badge ok";
-        toggleMicBtn.innerText = "關閉麥克風 (純收聽)";
-        toggleMicBtn.className = "ctrl-btn";
-        pttBtn.classList.remove('disabled-mic');
-        pttBtn.innerText = "按住通話 (PTT)";
-        statusText.innerText = "麥克風已就緒，隨時按住紅掣講話";
-        return true;
-      } catch (err) {
-        statusText.innerText = "麥克風授權失敗: " + err.message;
-        return false;
-      }
+    // 檢查現有 micStream 是否健康且未被舊版 iOS 靜音鎖死
+    function isStreamHealthy(stream) {
+      if (!stream || !stream.active) return false;
+      const tracks = stream.getAudioTracks();
+      if (tracks.length === 0) return false;
+      const t = tracks[0];
+      return (t.readyState === 'live' && !t.muted && t.enabled);
     }
 
-    function disableMicrophone() {
-      if (isTalking) stopTalking();
+    // 取得乾淨可用的麥克風串流（若被舊 iOS 鎖死則自動重取）
+    async function getActiveMicStream() {
+      if (isStreamHealthy(micStream)) {
+        return micStream;
+      }
       if (micStream) {
-        micStream.getTracks().forEach(track => track.stop());
+        micStream.getTracks().forEach(t => t.stop());
         micStream = null;
       }
-      micEnabled = false;
-      micBadge.innerText = "麥克風: 已關閉";
-      micBadge.className = "badge off";
-      toggleMicBtn.innerText = "開啟麥克風";
-      toggleMicBtn.className = "ctrl-btn active-green";
-      pttBtn.classList.add('disabled-mic');
-      pttBtn.innerText = "純收聽模式\n(已關閉麥克風)";
-      statusText.innerText = "目前為純收聽模式，可收聽語音與字幕";
+      // 使用最純粹的 audio: true，避開舊款 iPhone 硬件 DSP 鎖死
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micBadge.innerText = "麥克風: 活躍中";
+      micBadge.className = "badge ok";
+      return micStream;
     }
 
     toggleMicBtn.onclick = async () => {
       await ensureAudioActive();
-      if (micEnabled) disableMicrophone();
-      else {
-        statusText.innerText = "正在重新開啟麥克風...";
-        await enableMicrophone();
+      listenOnlyMode = !listenOnlyMode;
+      if (listenOnlyMode) {
+        if (isTalking) stopTalking();
+        if (micStream) {
+          micStream.getTracks().forEach(track => track.stop());
+          micStream = null;
+        }
+        micBadge.innerText = "麥克風: 已關閉";
+        micBadge.className = "badge off";
+        toggleMicBtn.innerText = "解除純收聽 (重開麥克風)";
+        toggleMicBtn.className = "ctrl-btn active-green";
+        pttBtn.classList.add('disabled-mic');
+        pttBtn.innerText = "純收聽模式\n(已關閉麥克風)";
+        statusText.innerText = "已徹底釋放麥克風，目前為省電純收聽模式";
+      } else {
+        statusText.innerText = "正在重新授權麥克風...";
+        try {
+          await getActiveMicStream();
+          toggleMicBtn.innerText = "鎖定為純收聽";
+          toggleMicBtn.className = "ctrl-btn";
+          pttBtn.classList.remove('disabled-mic');
+          pttBtn.innerText = "按住通話 (PTT)";
+          statusText.innerText = "麥克風已恢復，按住紅掣即可講話";
+        } catch (err) {
+          statusText.innerText = "重開麥克風失敗: " + err.message;
+        }
       }
     };
 
@@ -541,92 +532,95 @@
 
     initBtn.onclick = async () => {
       initBtn.disabled = true;
-      statusText.innerText = "正在啟動音訊與連線...";
+      statusText.innerText = "正在請求麥克風權限...";
 
-      const ok = await enableMicrophone();
-      if (!ok) {
-        initBtn.disabled = false;
-        return;
-      }
+      try {
+        // 1. 第一時間直接請求純麥克風權限
+        await getActiveMicStream();
 
-      initSpeechRecognition();
+        // 2. 初始化並喚醒 AudioContext
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        await ensureAudioActive();
+        startAudioKeepAlive();
+        await requestWakeLock();
 
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      await ensureAudioActive();
-      startAudioKeepAlive();
-      await requestWakeLock();
+        statusText.innerText = `音訊就緒 (${audioCtx.sampleRate}Hz)，正在連線 HiveMQ...`;
 
-      statusText.innerText = `音訊就緒 (${audioCtx.sampleRate}Hz)，正在連線 HiveMQ...`;
+        client = mqtt.connect(MQTT_BROKER, {
+          clientId: "Phone_" + MY_ID_HEX + "_" + Math.random().toString(16).slice(2, 6),
+          clean: true,
+          keepalive: 25,
+          reconnectPeriod: 2000,
+          connectTimeout: 10000
+        });
 
-      client = mqtt.connect(MQTT_BROKER, {
-        clientId: "Phone_" + MY_ID_HEX + "_" + Math.random().toString(16).slice(2, 6),
-        clean: true,
-        keepalive: 25,
-        reconnectPeriod: 2000,
-        connectTimeout: 10000
-      });
+        client.on('connect', () => {
+          netBadge.innerText = "網絡: 在線";
+          netBadge.className = "badge ok";
+          pttBtn.classList.remove('offline');
+          initBtn.style.display = 'none';
+          controlsBar.style.display = 'flex';
+          pttBtn.style.display = 'block';
+          chatBox.style.display = 'block';
+          statusText.innerText = "已連線！按住紅掣講話（留意底部咪音量%）";
+          client.subscribe(currentTopic, { qos: 0 });
+          client.subscribe(currentTextTopic, { qos: 0 });
+          playRogerBeep(1400, 60);
+        });
 
-      client.on('connect', () => {
-        netBadge.innerText = "網絡: 在線";
-        netBadge.className = "badge ok";
-        pttBtn.classList.remove('offline');
-        initBtn.style.display = 'none';
-        controlsBar.style.display = 'flex';
-        pttBtn.style.display = 'block';
-        chatBox.style.display = 'block';
-        client.subscribe(currentTopic, { qos: 0 });
-        client.subscribe(currentTextTopic, { qos: 0 });
-        playRogerBeep(1400, 60);
-      });
+        client.on('reconnect', () => {
+          netBadge.innerText = "網絡: 重連中...";
+          netBadge.className = "badge warn";
+          pttBtn.classList.add('offline');
+        });
 
-      client.on('reconnect', () => {
-        netBadge.innerText = "網絡: 重連中...";
-        netBadge.className = "badge warn";
-        pttBtn.classList.add('offline');
-      });
+        client.on('offline', () => {
+          netBadge.innerText = "網絡: 離線";
+          netBadge.className = "badge warn";
+          pttBtn.classList.add('offline');
+          if (isTalking) stopTalking();
+        });
 
-      client.on('offline', () => {
-        netBadge.innerText = "網絡: 離線";
-        netBadge.className = "badge warn";
-        pttBtn.classList.add('offline');
-        if (isTalking) stopTalking();
-      });
-
-      client.on('message', (topic, payload) => {
-        if (topic === currentTextTopic) {
-          try {
-            const data = JSON.parse(new TextDecoder().decode(payload));
-            if (data.sender && data.sender !== MY_ID_HEX && data.text) {
-              upsertChatMessage(data.sender, data.text, data.final, false);
-            }
-          } catch (e) {}
-          return;
-        }
-
-        if (topic !== currentTopic || isTalking || payload.byteLength <= 4) return;
-
-        const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-        const senderId = view.getUint32(0, true);
-        if (senderId === MY_ID) return;
-
-        rxCount++;
-        updateDebug();
-
-        pttBtn.classList.add('receiving');
-        pttBtn.innerText = "對方講話中...";
-        statusText.innerText = `正在接收 [${senderId.toString(16).toUpperCase().padStart(8, '0').slice(0, 4)}] 的語音...`;
-        clearTimeout(rxTimeout);
-        rxTimeout = setTimeout(() => {
-          if (!isTalking) {
-            pttBtn.classList.remove('receiving');
-            pttBtn.innerText = micEnabled ? "按住通話 (PTT)" : "純收聽模式\n(已關閉麥克風)";
-            statusText.innerText = micEnabled ? "已連線！放開收聽，按住通話" : "純收聽模式待命中";
-            playRogerBeep(1150, 70);
+        client.on('message', (topic, payload) => {
+          if (topic === currentTextTopic) {
+            try {
+              const data = JSON.parse(new TextDecoder().decode(payload));
+              if (data.sender && data.sender !== MY_ID_HEX && data.text) {
+                upsertChatMessage(data.sender, data.text, data.final, false);
+              }
+            } catch (e) {}
+            return;
           }
-        }, 350);
 
-        playIncomingUlaw(new Uint8Array(payload.buffer, payload.byteOffset + 4, payload.byteLength - 4));
-      });
+          if (topic !== currentTopic || isTalking || payload.byteLength <= 4) return;
+
+          const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+          const senderId = view.getUint32(0, true);
+          if (senderId === MY_ID) return;
+
+          rxCount++;
+          updateDebug();
+
+          pttBtn.classList.add('receiving');
+          pttBtn.innerText = "對方講話中...";
+          statusText.innerText = `正在接收 [${senderId.toString(16).toUpperCase().padStart(8, '0').slice(0, 4)}] 的語音...`;
+          clearTimeout(rxTimeout);
+          rxTimeout = setTimeout(() => {
+            if (!isTalking) {
+              pttBtn.classList.remove('receiving');
+              pttBtn.innerText = !listenOnlyMode ? "按住通話 (PTT)" : "純收聽模式\n(已關閉麥克風)";
+              statusText.innerText = !listenOnlyMode ? "已連線！放開收聽，按住通話" : "純收聽模式待命中";
+              playRogerBeep(1150, 70);
+            }
+          }, 350);
+
+          playIncomingUlaw(new Uint8Array(payload.buffer, payload.byteOffset + 4, payload.byteLength - 4));
+        });
+
+      } catch (err) {
+        statusText.innerText = "授權錯誤: " + err.message;
+        initBtn.disabled = false;
+      }
     };
 
     function playIncomingUlaw(ulawBytes) {
@@ -680,27 +674,34 @@
       const view = new DataView(packet.buffer);
       view.setUint32(0, MY_ID, true);
 
+      let peak = 0;
+
       for (let i = 0; i < sampleCount; i++) {
         const start = Math.floor(i * ratio);
         const end = Math.min(Math.floor((i + 1) * ratio), float32Buffer.length);
         let sum = 0;
         let count = 0;
         for (let j = start; j < end; j++) {
-          sum += float32Buffer[j];
+          const val = float32Buffer[j];
+          sum += val;
           count++;
+          const absVal = Math.abs(val);
+          if (absVal > peak) peak = absVal;
         }
         let avg = count > 0 ? (sum / count) : float32Buffer[start];
 
-        if (Math.abs(avg) < 0.004) {
-          avg *= 0.2;
+        if (Math.abs(avg) < 0.003) {
+          avg *= 0.25;
         } else {
-          avg *= 1.25;
+          avg *= 1.4; // 提高舊機麥克風收音靈敏度
         }
 
         let clamped = Math.max(-1, Math.min(1, avg));
         let int16 = clamped < 0 ? (clamped * 32768) : (clamped * 32767);
         packet[4 + i] = linearToUlaw(int16 | 0);
       }
+
+      currentMicLevel = Math.min(100, Math.round(peak * 180));
       return packet;
     }
 
@@ -710,62 +711,90 @@
     pttBtn.addEventListener('mousedown', (e) => { e.preventDefault(); startTalking(); });
     pttBtn.addEventListener('mouseup', (e) => { e.preventDefault(); stopTalking(); });
 
-    function startTalking() {
-      if (!micEnabled || !micStream) {
-        statusText.innerText = "請先點擊上方「開啟麥克風」才可發話！";
+    async function startTalking() {
+      if (listenOnlyMode) {
+        statusText.innerText = "請先點擊上方「解除純收聽」才可發話！";
         return;
       }
       if (!client || !client.connected || isTalking) return;
 
       isTalking = true;
+      const mySession = ++talkSessionId;
       currentTranscript = "";
       pttBtn.classList.remove('receiving');
       pttBtn.classList.add('active');
       pttBtn.innerText = "正在廣播中...";
-      statusText.innerText = "正在發送語音...";
+      statusText.innerText = "正在喚醒麥克風並發送語音...";
 
-      ensureAudioActive();
-      playRogerBeep(1500, 45);
+      try {
+        await ensureAudioActive();
 
-      // 只有在用戶明確開啟字幕時才啟動 STT
-      if (sttEnabled && recognition) {
-        try { recognition.start(); } catch (e) {}
+        // 關鍵修復：如果舊 iPhone 的麥克風被系統標記為 muted (紅斜線)，即時重新拉取新 Stream！
+        const stream = await getActiveMicStream();
+        if (!isTalking || mySession !== talkSessionId) return; // 如果等待期間已放手則中止
+
+        playRogerBeep(1500, 45);
+
+        if (sttEnabled && recognition) {
+          try { recognition.start(); } catch (e) {}
+        }
+
+        micSource = audioCtx.createMediaStreamSource(stream);
+        scriptNode = audioCtx.createScriptProcessor(2048, 1, 1);
+
+        silencer = audioCtx.createGain();
+        silencer.gain.value = 0;
+
+        scriptNode.onaudioprocess = (e) => {
+          if (!isTalking || !client.connected) return;
+          const inputData = e.inputBuffer.getChannelData(0);
+          const outputData = e.outputBuffer.getChannelData(0);
+
+          // 關鍵修復：舊版 iOS Safari 必須顯式寫入 outputBuffer 才會持續驅動音訊管線
+          for (let i = 0; i < outputData.length; i++) {
+            outputData[i] = 0;
+          }
+
+          const packet = encodeAudioPacket(inputData, audioCtx.sampleRate);
+          client.publish(currentTopic, packet, { qos: 0 });
+
+          txCount++;
+          updateDebug();
+        };
+
+        micSource.connect(scriptNode);
+        scriptNode.connect(silencer);
+        silencer.connect(audioCtx.destination);
+        statusText.innerText = "正在發送高清語音...";
+
+      } catch (err) {
+        statusText.innerText = "麥克風啟動失敗: " + err.message;
+        isTalking = false;
+        pttBtn.classList.remove('active');
       }
-
-      const source = audioCtx.createMediaStreamSource(micStream);
-      scriptNode = audioCtx.createScriptProcessor(2048, 1, 1);
-
-      silencer = audioCtx.createGain();
-      silencer.gain.value = 0;
-
-      scriptNode.onaudioprocess = (e) => {
-        if (!isTalking || !client.connected) return;
-        const inputData = e.inputBuffer.getChannelData(0);
-        const packet = encodeAudioPacket(inputData, audioCtx.sampleRate);
-        client.publish(currentTopic, packet, { qos: 0 });
-
-        txCount++;
-        updateDebug();
-      };
-
-      source.connect(scriptNode);
-      scriptNode.connect(silencer);
-      silencer.connect(audioCtx.destination);
     }
 
     function stopTalking() {
       if (!isTalking) return;
       isTalking = false;
+      talkSessionId++;
+      currentMicLevel = 0;
+      updateDebug();
+
       pttBtn.classList.remove('active');
-      pttBtn.innerText = micEnabled ? "按住通話 (PTT)" : "純收聽模式\n(已關閉麥克風)";
+      pttBtn.innerText = !listenOnlyMode ? "按住通話 (PTT)" : "純收聽模式\n(已關閉麥克風)";
       statusText.innerText = "通話結束，放開收聽中";
 
+      if (micSource) {
+        try { micSource.disconnect(); } catch (e) {}
+        micSource = null;
+      }
       if (scriptNode) {
-        scriptNode.disconnect();
+        try { scriptNode.disconnect(); } catch (e) {}
         scriptNode = null;
       }
       if (silencer) {
-        silencer.disconnect();
+        try { silencer.disconnect(); } catch (e) {}
         silencer = null;
       }
 
