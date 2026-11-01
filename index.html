@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Web 對講機 - v9.0 專業控制版</title>
+  <title>Web 對講機 - v10.0 廣東話字幕版</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
     body {
@@ -13,9 +13,11 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
+      justify-content: flex-start;
       min-height: 100vh;
       margin: 0;
+      padding: 16px 0;
+      box-sizing: border-box;
       user-select: none;
       -webkit-user-select: none;
     }
@@ -23,22 +25,22 @@
       font-size: 13px;
       color: #00e5ff;
       background: rgba(0, 229, 255, 0.12);
-      padding: 6px 14px;
+      padding: 5px 14px;
       border-radius: 20px;
-      margin-bottom: 10px;
+      margin-bottom: 8px;
       font-weight: 600;
     }
     .badges {
       display: flex;
       flex-wrap: wrap;
       justify-content: center;
-      gap: 8px;
-      margin-bottom: 14px;
-      font-size: 12px;
-      padding: 0 12px;
+      gap: 6px;
+      margin-bottom: 10px;
+      font-size: 11px;
+      padding: 0 10px;
     }
     .badge {
-      padding: 4px 10px;
+      padding: 4px 8px;
       border-radius: 6px;
       background: #1c2026;
       color: #78909c;
@@ -61,17 +63,19 @@
     }
     .controls-bar {
       display: none;
-      gap: 10px;
-      margin-bottom: 18px;
-      align-items: center;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding: 0 12px;
     }
     select, .ctrl-btn {
       background: #1c2026;
       color: #eceff1;
       border: 1px solid #37474f;
-      padding: 8px 14px;
+      padding: 7px 12px;
       border-radius: 8px;
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 600;
       cursor: pointer;
     }
@@ -85,25 +89,20 @@
       color: #69f0ae;
       background: rgba(0, 230, 118, 0.1);
     }
+    .ctrl-btn.stt-on {
+      border-color: #00e5ff;
+      color: #84ffff;
+      background: rgba(0, 229, 255, 0.1);
+    }
     .status {
-      margin-bottom: 22px;
-      font-size: 15px;
+      margin-bottom: 14px;
+      font-size: 14px;
       color: #cfd8dc;
       padding: 0 20px;
       text-align: center;
-      line-height: 1.5;
-    }
-    .debug {
-      margin-top: 26px;
-      font-size: 13px;
-      color: #00e676;
-      font-family: monospace;
-      background: #15181e;
-      padding: 10px 16px;
-      border-radius: 8px;
-      border: 1px solid #262b33;
     }
     #initBtn {
+      margin-top: 40px;
       padding: 16px 34px;
       font-size: 18px;
       font-weight: bold;
@@ -115,19 +114,20 @@
       box-shadow: 0 6px 20px rgba(41, 121, 255, 0.35);
     }
     #pttBtn {
-      width: 220px;
-      height: 220px;
+      width: 190px;
+      height: 190px;
       border-radius: 50%;
       border: 4px solid rgba(255, 255, 255, 0.15);
       background: #ff1744;
       color: white;
-      font-size: 22px;
+      font-size: 20px;
       font-weight: bold;
-      box-shadow: 0 12px 30px rgba(255, 23, 68, 0.45);
+      box-shadow: 0 10px 25px rgba(255, 23, 68, 0.45);
       display: none;
       touch-action: none;
       transition: transform 0.08s ease, background 0.1s ease;
-      padding: 0 20px;
+      padding: 0 16px;
+      flex-shrink: 0;
     }
     #pttBtn.active {
       background: #d50000;
@@ -136,7 +136,7 @@
     }
     #pttBtn.receiving {
       background: #00c853;
-      box-shadow: 0 12px 30px rgba(0, 200, 83, 0.45);
+      box-shadow: 0 10px 25px rgba(0, 200, 83, 0.45);
     }
     #pttBtn.disabled-mic {
       background: #37474f;
@@ -148,37 +148,94 @@
       background: #546e7a;
       box-shadow: none;
     }
+    /* 廣東話即時對話字幕框 */
+    .chat-box {
+      display: none;
+      width: 90%;
+      max-width: 400px;
+      height: 170px;
+      margin-top: 16px;
+      background: #14171d;
+      border: 1px solid #262b33;
+      border-radius: 10px;
+      padding: 10px 12px;
+      overflow-y: auto;
+      font-size: 14px;
+      line-height: 1.5;
+      box-sizing: border-box;
+    }
+    .chat-msg {
+      margin-bottom: 6px;
+      word-break: break-word;
+    }
+    .chat-msg .time {
+      color: #607d8b;
+      font-size: 11px;
+      margin-right: 4px;
+      font-family: monospace;
+    }
+    .chat-msg .sender {
+      font-weight: bold;
+      margin-right: 6px;
+      font-family: monospace;
+    }
+    .chat-msg.me .sender { color: #00e5ff; }
+    .chat-msg.other .sender { color: #00e676; }
+    .chat-msg.interim {
+      color: #90a4ae;
+      font-style: italic;
+    }
+    .debug {
+      margin-top: 12px;
+      font-size: 12px;
+      color: #00e676;
+      font-family: monospace;
+      background: #15181e;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid #262b33;
+    }
   </style>
 </head>
 <body>
 
-  <div class="ver">v9.0 全天候對講機 (可釋放麥克風 + 頻道切換 + Roger Beep)</div>
+  <div class="ver">v10.0 廣東話即時語音轉文字 (STT 字幕版)</div>
   
   <div class="badges">
     <div class="badge" id="wakeBadge">螢幕常亮: 未啟動</div>
     <div class="badge" id="netBadge">網絡: 待命</div>
     <div class="badge" id="micBadge">麥克風: 未授權</div>
+    <div class="badge" id="sttBadge">粵語字幕: 待命</div>
   </div>
 
-  <!-- 控制列：頻道選擇與關閉麥克風按鈕 -->
   <div class="controls-bar" id="controlsBar">
     <select id="channelSelect">
-      <option value="ray_walkie_hk/ch1">頻道 CH 1 (公用)</option>
-      <option value="ray_walkie_hk/ch2">頻道 CH 2 (專用)</option>
-      <option value="ray_walkie_hk/ch3">頻道 CH 3 (備用)</option>
-      <option value="ray_walkie_hk/ch4">頻道 CH 4 (測試)</option>
+      <option value="ray_walkie_hk/ch1">CH 1 (公用)</option>
+      <option value="ray_walkie_hk/ch2">CH 2 (專用)</option>
+      <option value="ray_walkie_hk/ch3">CH 3 (備用)</option>
+      <option value="ray_walkie_hk/ch4">CH 4 (測試)</option>
     </select>
-    <button class="ctrl-btn mic-on" id="toggleMicBtn">停止麥克風 (純收聽)</button>
+    <button class="ctrl-btn mic-on" id="toggleMicBtn">停止麥克風</button>
+    <button class="ctrl-btn stt-on" id="toggleSttBtn">字幕: 開啟</button>
   </div>
 
-  <div class="status" id="statusText">請點擊下方按鈕啟動音訊與常駐保護</div>
+  <div class="status" id="statusText">請點擊下方按鈕啟動音訊與廣東話字幕</div>
   <button id="initBtn">1. 啟用全天候對講機</button>
   <button id="pttBtn">按住通話 (PTT)</button>
+
+  <!-- 廣東話即時字幕紀錄區 -->
+  <div class="chat-box" id="chatBox">
+    <div class="chat-msg" style="color:#607d8b; text-align:center; font-size:12px;">
+      --- 廣東話即時對話字幕 (按住 PTT 講話自動辨識) ---
+    </div>
+  </div>
+
   <div class="debug" id="debugText">本機 ID: ---- | TX: 0 | RX: 0</div>
 
   <script>
     const MQTT_BROKER = "wss://broker.hivemq.com:8884/mqtt";
     let currentTopic = "ray_walkie_hk/ch1";
+    let currentTextTopic = currentTopic + "/text";
     const TARGET_RATE = 16000;
 
     const MY_ID = Math.floor(Math.random() * 0xFFFFFFFF) >>> 0;
@@ -199,6 +256,12 @@
     let rxCount = 0;
     let rxTimeout = null;
 
+    // 語音轉文字 (Speech Recognition) 變數
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition = null;
+    let sttEnabled = true;
+    let currentTranscript = "";
+
     const initBtn = document.getElementById('initBtn');
     const pttBtn = document.getElementById('pttBtn');
     const statusText = document.getElementById('statusText');
@@ -206,9 +269,12 @@
     const wakeBadge = document.getElementById('wakeBadge');
     const netBadge = document.getElementById('netBadge');
     const micBadge = document.getElementById('micBadge');
+    const sttBadge = document.getElementById('sttBadge');
     const controlsBar = document.getElementById('controlsBar');
     const channelSelect = document.getElementById('channelSelect');
     const toggleMicBtn = document.getElementById('toggleMicBtn');
+    const toggleSttBtn = document.getElementById('toggleSttBtn');
+    const chatBox = document.getElementById('chatBox');
 
     const ULAW_DECODE = new Float32Array(256);
     (function initUlawTable() {
@@ -241,7 +307,117 @@
     }
     updateDebug();
 
-    // 合成對講機 Roger Beep 提示音
+    // ================= 初始化香港廣東話 Speech-to-Text 引擎 =================
+    function initSpeechRecognition() {
+      if (!SpeechRecognition) {
+        sttBadge.innerText = "粵語字幕: 瀏覽器不支援";
+        sttBadge.className = "badge off";
+        toggleSttBtn.style.display = 'none';
+        return;
+      }
+
+      recognition = new SpeechRecognition();
+      recognition.lang = 'zh-HK';        // 香港廣東話 (自動出香港繁體口語字)
+      recognition.continuous = true;
+      recognition.interimResults = true; // 即時串流辨識結果
+
+      recognition.onstart = () => {
+        sttBadge.innerText = "粵語字幕: 聽寫中...";
+        sttBadge.className = "badge ok";
+      };
+
+      recognition.onresult = (event) => {
+        let interim = "";
+        let finalStr = "";
+        for (let i = 0; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalStr += transcript;
+          } else {
+            interim += transcript;
+          }
+        }
+        currentTranscript = (finalStr + interim).trim();
+        if (currentTranscript) {
+          // 更新自己畫面的即時字幕並透過 MQTT 同步給對方
+          upsertChatMessage(MY_ID_HEX, currentTranscript, false, true);
+          publishTextSubtitle(currentTranscript, false);
+        }
+      };
+
+      recognition.onerror = (e) => {
+        // 忽略無講話 (no-speech) 或手動停止錯誤
+        if (e.error !== 'no-speech' && e.error !== 'aborted') {
+          sttBadge.innerText = "粵語字幕: " + e.error;
+          sttBadge.className = "badge warn";
+        }
+      };
+
+      recognition.onend = () => {
+        if (sttEnabled) {
+          sttBadge.innerText = "粵語字幕: 就緒";
+          sttBadge.className = "badge ok";
+        }
+      };
+
+      sttBadge.innerText = "粵語字幕: 就緒";
+      sttBadge.className = "badge ok";
+    }
+
+    // 發送廣東話字幕到 MQTT 文字頻道
+    function publishTextSubtitle(text, isFinal) {
+      if (!client || !client.connected || !text) return;
+      const payload = JSON.stringify({
+        sender: MY_ID_HEX,
+        text: text,
+        final: isFinal
+      });
+      client.publish(currentTextTopic, payload, { qos: 0 });
+    }
+
+    // 在字幕框新增或更新對話訊息
+    function upsertChatMessage(senderHex, text, isFinal, isMe) {
+      const interimId = "interim_" + senderHex;
+      let msgEl = document.getElementById(interimId);
+
+      const nowStr = new Date().toTimeString().slice(0, 8);
+
+      if (!msgEl) {
+        msgEl = document.createElement('div');
+        msgEl.id = interimId;
+        msgEl.className = `chat-msg ${isMe ? 'me' : 'other'} interim`;
+        chatBox.appendChild(msgEl);
+      }
+
+      const label = isMe ? `我(${senderHex})` : `對方(${senderHex})`;
+      msgEl.innerHTML = `<span class="time">[${nowStr}]</span><span class="sender">${label}:</span><span class="content"></span>`;
+      msgEl.querySelector('.content').innerText = text + (isFinal ? "" : " ...");
+
+      if (isFinal) {
+        msgEl.removeAttribute('id'); // 移除暫存 ID，鎖定成為正式歷史紀錄
+        msgEl.classList.remove('interim');
+      }
+
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    // 開關廣東話字幕按鈕
+    toggleSttBtn.onclick = () => {
+      sttEnabled = !sttEnabled;
+      if (sttEnabled) {
+        toggleSttBtn.innerText = "字幕: 開啟";
+        toggleSttBtn.className = "ctrl-btn stt-on";
+        sttBadge.innerText = "粵語字幕: 就緒";
+        sttBadge.className = "badge ok";
+      } else {
+        if (recognition) { try { recognition.stop(); } catch (e) {} }
+        toggleSttBtn.innerText = "字幕: 關閉";
+        toggleSttBtn.className = "ctrl-btn";
+        sttBadge.innerText = "粵語字幕: 已關閉";
+        sttBadge.className = "badge off";
+      }
+    };
+
     function playRogerBeep(freq = 1250, durationMs = 65) {
       if (!audioCtx || audioCtx.state !== 'running') return;
       try {
@@ -258,7 +434,6 @@
       } catch (e) {}
     }
 
-    // 開啟麥克風權限
     async function enableMicrophone() {
       try {
         micStream = await navigator.mediaDevices.getUserMedia({
@@ -271,11 +446,11 @@
         micEnabled = true;
         micBadge.innerText = "麥克風: 就緒";
         micBadge.className = "badge ok";
-        toggleMicBtn.innerText = "停止麥克風 (純收聽)";
+        toggleMicBtn.innerText = "停止麥克風";
         toggleMicBtn.className = "ctrl-btn mic-on";
         pttBtn.classList.remove('disabled-mic');
         pttBtn.innerText = "按住通話 (PTT)";
-        statusText.innerText = "麥克風已啟用！隨時按住紅掣廣播";
+        statusText.innerText = "麥克風已啟用！按住紅掣講廣東話即出字幕";
         return true;
       } catch (err) {
         statusText.innerText = "麥克風授權失敗: " + err.message;
@@ -283,7 +458,6 @@
       }
     }
 
-    // 徹底關閉並釋放麥克風 (熄滅 iOS 頂部橙色錄音指示燈，轉為純收聽模式)
     function disableMicrophone() {
       if (isTalking) stopTalking();
       if (micStream) {
@@ -291,16 +465,15 @@
         micStream = null;
       }
       micEnabled = false;
-      micBadge.innerText = "麥克風: 已關閉 (純收聽)";
+      micBadge.innerText = "麥克風: 純收聽";
       micBadge.className = "badge off";
-      toggleMicBtn.innerText = "重新啟用麥克風";
+      toggleMicBtn.innerText = "重開麥克風";
       toggleMicBtn.className = "ctrl-btn mic-off";
       pttBtn.classList.add('disabled-mic');
       pttBtn.innerText = "純收聽模式\n(已關閉麥克風)";
-      statusText.innerText = "已停止存取麥克風，目前為省電純收聽模式";
+      statusText.innerText = "已停止存取麥克風，目前為省電純收聽及看字幕模式";
     }
 
-    // 切換麥克風開關按鈕事件
     toggleMicBtn.onclick = async () => {
       await ensureAudioActive();
       if (micEnabled) {
@@ -311,13 +484,15 @@
       }
     };
 
-    // 切換對講機頻道事件
     channelSelect.onchange = () => {
       const newTopic = channelSelect.value;
       if (client && client.connected && newTopic !== currentTopic) {
         client.unsubscribe(currentTopic);
+        client.unsubscribe(currentTextTopic);
         currentTopic = newTopic;
+        currentTextTopic = currentTopic + "/text";
         client.subscribe(currentTopic, { qos: 0 });
+        client.subscribe(currentTextTopic, { qos: 0 });
         playRogerBeep(1500, 50);
         statusText.innerText = `已切換至 ${channelSelect.options[channelSelect.selectedIndex].text}`;
       }
@@ -375,13 +550,15 @@
 
     initBtn.onclick = async () => {
       initBtn.disabled = true;
-      statusText.innerText = "正在啟動音訊引擎與麥克風...";
+      statusText.innerText = "正在啟動音訊引擎與廣東話辨識...";
 
       const ok = await enableMicrophone();
       if (!ok) {
         initBtn.disabled = false;
         return;
       }
+
+      initSpeechRecognition();
 
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       await ensureAudioActive();
@@ -405,7 +582,9 @@
         initBtn.style.display = 'none';
         controlsBar.style.display = 'flex';
         pttBtn.style.display = 'block';
+        chatBox.style.display = 'block';
         client.subscribe(currentTopic, { qos: 0 });
+        client.subscribe(currentTextTopic, { qos: 0 });
         playRogerBeep(1400, 60);
       });
 
@@ -413,7 +592,6 @@
         netBadge.innerText = "網絡: 重連中...";
         netBadge.className = "badge warn";
         pttBtn.classList.add('offline');
-        statusText.innerText = "網絡閃斷，正在自動重新連線...";
       });
 
       client.on('offline', () => {
@@ -424,6 +602,18 @@
       });
 
       client.on('message', (topic, payload) => {
+        // 1. 處理收到的廣東話文字字幕
+        if (topic === currentTextTopic) {
+          try {
+            const data = JSON.parse(new TextDecoder().decode(payload));
+            if (data.sender && data.sender !== MY_ID_HEX && data.text) {
+              upsertChatMessage(data.sender, data.text, data.final, false);
+            }
+          } catch (e) {}
+          return;
+        }
+
+        // 2. 處理收到的語音封包
         if (topic !== currentTopic || isTalking || payload.byteLength <= 4) return;
 
         const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
@@ -442,7 +632,7 @@
             pttBtn.classList.remove('receiving');
             pttBtn.innerText = micEnabled ? "按住通話 (PTT)" : "純收聽模式\n(已關閉麥克風)";
             statusText.innerText = micEnabled ? "已連線！放開收聽，按住通話" : "純收聽模式待命中";
-            playRogerBeep(1150, 70); // 對方講完自動發出 Roger Beep 提示音
+            playRogerBeep(1150, 70);
           }
         }, 350);
 
@@ -533,19 +723,25 @@
 
     function startTalking() {
       if (!micEnabled || !micStream) {
-        statusText.innerText = "請先點擊上方「重新啟用麥克風」才可發話！";
+        statusText.innerText = "請先點擊上方「重開麥克風」才可發話！";
         return;
       }
       if (!client || !client.connected || isTalking) return;
 
       isTalking = true;
+      currentTranscript = "";
       pttBtn.classList.remove('receiving');
       pttBtn.classList.add('active');
       pttBtn.innerText = "正在廣播中...";
-      statusText.innerText = "正在向當前頻道發送高清語音...";
+      statusText.innerText = "正在發送語音及同步廣東話字幕...";
 
       ensureAudioActive();
       playRogerBeep(1500, 45);
+
+      // 啟動廣東話語音轉文字
+      if (sttEnabled && recognition) {
+        try { recognition.start(); } catch (e) {}
+      }
 
       const source = audioCtx.createMediaStreamSource(micStream);
       scriptNode = audioCtx.createScriptProcessor(2048, 1, 1);
@@ -581,8 +777,20 @@
       }
       if (silencer) {
         silencer.disconnect();
+        silencer.disconnect();
         silencer = null;
       }
+
+      // 停止語音轉文字並鎖定最後一句字幕
+      if (recognition) {
+        try { recognition.stop(); } catch (e) {}
+      }
+      if (currentTranscript) {
+        upsertChatMessage(MY_ID_HEX, currentTranscript, true, true);
+        publishTextSubtitle(currentTranscript, true);
+        currentTranscript = "";
+      }
+
       playRogerBeep(1050, 60);
     }
   </script>
