@@ -302,7 +302,6 @@
     let isTalking = false;
     let talkSessionId = 0;
     let nextStartTime = 0;
-    let lastSample = 0;
     let txCount = 0;
     let rxCount = 0;
     let currentMicLevel = 0;
@@ -840,16 +839,9 @@
         const pos = i / ratio;
         const idx = Math.floor(pos);
         const frac = pos - idx;
-        const s0 = (idx === 0) ? lastSample : ULAW_DECODE[ulawBytes[idx - 1]];
-        const s1 = ULAW_DECODE[ulawBytes[idx]];
+        const s0 = ULAW_DECODE[ulawBytes[idx]];
+        const s1 = ULAW_DECODE[ulawBytes[Math.min(idx + 1, inLen - 1)]];
         upsampled[i] = s0 + frac * (s1 - s0);
-      }
-      lastSample = ULAW_DECODE[ulawBytes[inLen - 1]];
-
-      const fadeLen = Math.min(24, Math.floor(outLen / 10));
-      for (let i = 0; i < fadeLen; i++) {
-        const w = i / fadeLen;
-        upsampled[i] = lastSample * (1 - w) + upsampled[i] * w;
       }
 
       const audioBuffer = audioCtx.createBuffer(1, outLen, nativeRate);
@@ -861,7 +853,7 @@
       source.onended = () => source.disconnect();
 
       const now = audioCtx.currentTime;
-      const earliestStartTime = now + 0.12;
+      const earliestStartTime = now + 0.04;
       if (nextStartTime < earliestStartTime) nextStartTime = earliestStartTime;
 
       source.start(nextStartTime);
