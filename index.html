@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Web 對講機 - v15.1 廣東話原生字幕穩定版</title>
+  <title>Web 對講機 - v15.2 雙向音訊修復版</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
     body {
@@ -240,7 +240,7 @@
   </style>
 </head>
 <body>
-  <div class="ver">v15.1 原生免費 zh-HK 字幕穩定版 (音訊修正 + 免Key + 防搶咪)</div>
+  <div class="ver">v15.2 雙向音訊修復版 (修復拼寫錯誤 + 完美收發)</div>
   
   <div class="badges">
     <div class="badge" id="wakeBadge">螢幕常亮: 啟動中</div>
@@ -298,13 +298,12 @@
     let isTalking = false;
     let talkSessionId = 0;
     let nextStartTime = 0;
-    let lastSample = 0; // 恢復 v10 穩定平滑過渡變數
+    let lastSample = 0;
     let txCount = 0;
     let rxCount = 0;
     let currentMicLevel = 0;
     let rxTimeout = null;
 
-    // 原生語音辨識設定
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
     let sttEnabled = true;
@@ -814,7 +813,7 @@
       }
     };
 
-    // 🏆 【完美還原 v10 穩定音訊播放機制】修復爆音與雜音
+    // 🏆 修正拼寫錯誤，確保接收解碼正常運作
     function playIncomingUlaw(ulawBytes) {
       if (!audioCtx) return;
       if (audioCtx.state !== 'running') audioCtx.resume();
@@ -840,7 +839,7 @@
       const fadeLen = Math.min(24, Math.floor(outLen / 10));
       for (let i = 0; i < fadeLen; i++) {
         const w = i / fadeLen;
-        upsampled[i] = lastSample * (1 - w) + upsampeld[i] * w; // 修正拼寫
+        upsampled[i] = lastSample * (1 - w) + upsampled[i] * w;
       }
 
       const audioBuffer = audioCtx.createBuffer(1, outLen, nativeRate);
@@ -859,7 +858,6 @@
       nextStartTime += audioBuffer.duration;
     }
 
-    // 🏆 【完美還原 v10 穩定音訊編碼與峰值計算】
     function encodeAudioPacket(float32Buffer, inputRate) {
       const ratio = inputRate / TARGET_RATE;
       const sampleCount = Math.floor(float32Buffer.length / ratio);
