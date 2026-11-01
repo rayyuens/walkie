@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>ESP32 對講機 - v6.0 完美雙向版</title>
+  <title>Web 對講機 - v7.0 雙機高清互講版</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background-color: #121212;
+      background-color: #101216;
       color: #fff;
       display: flex;
       flex-direction: column;
@@ -19,66 +19,86 @@
       user-select: none;
       -webkit-user-select: none;
     }
-    .ver { font-size: 13px; color: #ffeb3b; margin-bottom: 8px; font-weight: bold; }
+    .ver {
+      font-size: 13px;
+      color: #00e5ff;
+      background: rgba(0, 229, 255, 0.12);
+      padding: 6px 14px;
+      border-radius: 20px;
+      margin-bottom: 12px;
+      font-weight: 600;
+    }
     .status {
-      margin-bottom: 20px;
+      margin-bottom: 24px;
       font-size: 16px;
-      color: #ccc;
+      color: #cfd8dc;
       padding: 0 20px;
       text-align: center;
+      line-height: 1.5;
     }
     .debug {
-      margin-top: 25px;
+      margin-top: 28px;
       font-size: 13px;
-      color: #2ecc71;
+      color: #00e676;
       font-family: monospace;
-      background: #222;
-      padding: 8px 14px;
-      border-radius: 6px;
+      background: #1c2026;
+      padding: 10px 16px;
+      border-radius: 8px;
+      border: 1px solid #2c323b;
     }
     #initBtn {
-      padding: 16px 32px;
+      padding: 16px 34px;
       font-size: 18px;
       font-weight: bold;
-      border-radius: 8px;
+      border-radius: 12px;
       border: none;
-      background: #3498db;
+      background: #2979ff;
       color: white;
       cursor: pointer;
+      box-shadow: 0 6px 20px rgba(41, 121, 255, 0.35);
     }
     #pttBtn {
-      width: 220px;
-      height: 220px;
+      width: 230px;
+      height: 230px;
       border-radius: 50%;
-      border: none;
-      background: #e74c3c;
+      border: 4px solid rgba(255, 255, 255, 0.15);
+      background: #ff1744;
       color: white;
       font-size: 24px;
       font-weight: bold;
-      box-shadow: 0 10px 25px rgba(231, 76, 60, 0.4);
+      box-shadow: 0 12px 30px rgba(255, 23, 68, 0.45);
       display: none;
       touch-action: none;
+      transition: transform 0.08s ease, background 0.1s ease;
     }
-    #pttBtn:active, #pttBtn.active {
-      background: #c0392b;
-      transform: scale(0.96);
+    #pttBtn.active {
+      background: #d50000;
+      transform: scale(0.95);
+      box-shadow: 0 4px 15px rgba(255, 23, 68, 0.7);
+    }
+    #pttBtn.receiving {
+      background: #00c853;
+      box-shadow: 0 12px 30px rgba(0, 200, 83, 0.45);
     }
   </style>
 </head>
 <body>
 
-  <div class="ver">v6.0 完美雙向版 (還原手機發送 + 8kHz 極速接收)</div>
-  <div class="status" id="statusText">請先點擊下方按鈕啟動音訊</div>
+  <div class="ver">v7.0 電話對電話 (16kHz 高清 DSP 降噪 + 極低延遲)</div>
+  <div class="status" id="statusText">請點擊下方按鈕啟動音訊與麥克風</div>
   <button id="initBtn">1. 啟用對講機</button>
   <button id="pttBtn">按住通話 (PTT)</button>
-  <div class="debug" id="debugText">TX: 0 包 | RX: 0 包</div>
+  <div class="debug" id="debugText">本機 ID: ---- | TX: 0 | RX: 0</div>
 
   <script>
     const MQTT_BROKER = "wss://broker.hivemq.com:8884/mqtt";
-    const TOPIC_ESP32_TX = "ray_walkie_hk/esp32_tx";
-    const TOPIC_PHONE_TX = "ray_walkie_hk/phone_tx";
-    const ESP_TX_RATE = 8000;      // ESP32 發送過來的語音為 8kHz 輕量封包
-    const PHONE_TX_RATE = 16000;   // 手機發送給 ESP32 維持完美 16kHz
+    // 所有電話共用同一個頻道，透過封包頭 4-byte ID 區分發送者
+    const ROOM_TOPIC = "ray_walkie_hk/room_v7";
+    const TARGET_RATE = 16000;
+
+    // 產生本機專屬 32-bit 隨機 ID，防止聽到自己發出的回音
+    const MY_ID = Math.floor(Math.random() * 0xFFFFFFFF) >>> 0;
+    const MY_ID_HEX = MY_ID.toString(16).toUpperCase().padStart(8, '0').slice(0, 4);
 
     let client = null;
     let audioCtx = null;
@@ -90,26 +110,57 @@
     let lastSample = 0;
     let txCount = 0;
     let rxCount = 0;
+    let rxTimeout = null;
 
     const initBtn = document.getElementById('initBtn');
     const pttBtn = document.getElementById('pttBtn');
     const statusText = document.getElementById('statusText');
     const debugText = document.getElementById('debugText');
 
-    function updateDebug() {
-      debugText.innerText = `TX (發送): ${txCount} 包 | RX (接收): ${rxCount} 包`;
+    // 建立 G.711 u-law 解碼查找表 (8-bit -> Float32)
+    const ULAW_DECODE = new Float32Array(256);
+    (function initUlawTable() {
+      for (let i = 0; i < 256; i++) {
+        let u = ~i & 0xFF;
+        let sign = (u & 0x80) ? -1 : 1;
+        let exp = (u >> 4) & 0x07;
+        let mant = u & 0x0F;
+        let sample = (((mant << 3) + 0x84) << exp) - 0x84;
+        ULAW_DECODE[i] = (sign * sample) / 32768.0;
+      }
+    })();
+
+    // G.711 u-law 編碼函式 (16-bit Int -> 8-bit u-law)
+    function linearToUlaw(sample) {
+      const BIAS = 0x84;
+      const CLIP = 32635;
+      let sign = (sample < 0) ? 0x80 : 0;
+      if (sample < 0) sample = -sample;
+      if (sample > CLIP) sample = CLIP;
+      sample += BIAS;
+
+      let exp = 7;
+      for (let expMask = 0x4000; (sample & expMask) === 0 && exp > 0; exp--, expMask >>= 1) {}
+      let mant = (sample >> (exp + 3)) & 0x0F;
+      return (~(sign | (exp << 4) | mant)) & 0xFF;
     }
+
+    function updateDebug() {
+      debugText.innerText = `ID: ${MY_ID_HEX} | 發送(TX): ${txCount} | 接收(RX): ${rxCount}`;
+    }
+    updateDebug();
 
     initBtn.onclick = async () => {
       initBtn.disabled = true;
-      statusText.innerText = "正在取得麥克風授權...";
+      statusText.innerText = "正在啟動硬件降噪麥克風...";
 
       try {
+        // 開啟 iOS / Android 原生硬件級回音消除、環境降噪與自動增益
         micStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
-            noiseSuppression: false,
-            autoGainControl: false
+            noiseSuppression: true,
+            autoGainControl: true
           }
         });
 
@@ -118,93 +169,119 @@
           await audioCtx.resume();
         }
 
-        statusText.innerText = `音訊就緒 (${audioCtx.sampleRate}Hz)，正在連 HiveMQ...`;
+        statusText.innerText = `音訊就緒 (${audioCtx.sampleRate}Hz)，正在連線伺服器...`;
 
         client = mqtt.connect(MQTT_BROKER, {
-          clientId: "iPhone_HK_" + Math.random().toString(16).substr(2, 8),
-          clean: true
+          clientId: "Phone_" + MY_ID_HEX + "_" + Math.random().toString(16).slice(2, 6),
+          clean: true,
+          keepalive: 30
         });
 
         client.on('connect', () => {
-          statusText.innerText = "已連線！放開按鈕收聽，按住通話";
+          statusText.innerText = "已連線！兩部電話可隨時按住紅掣互講";
           initBtn.style.display = 'none';
           pttBtn.style.display = 'block';
-          client.subscribe(TOPIC_ESP32_TX);
+          client.subscribe(ROOM_TOPIC, { qos: 0 });
         });
 
         client.on('message', (topic, payload) => {
-          if (topic === TOPIC_ESP32_TX && !isTalking) {
-            rxCount++;
-            updateDebug();
-            playIncomingPCM(payload);
-          }
+          if (topic !== ROOM_TOPIC || isTalking || payload.byteLength <= 4) return;
+
+          // 讀取頭 4 bytes 發送者 ID，如果是自己發出的封包則直接忽略
+          const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+          const senderId = view.getUint32(0, true);
+          if (senderId === MY_ID) return;
+
+          rxCount++;
+          updateDebug();
+
+          // 視覺提示：收到對方講話時按鈕變綠色
+          pttBtn.classList.add('receiving');
+          pttBtn.innerText = "對方講話中...";
+          statusText.innerText = `正在接收來自 [${senderId.toString(16).toUpperCase().slice(0, 4)}] 的語音...`;
+          clearTimeout(rxTimeout);
+          rxTimeout = setTimeout(() => {
+            if (!isTalking) {
+              pttBtn.classList.remove('receiving');
+              pttBtn.innerText = "按住通話 (PTT)";
+              statusText.innerText = "已連線！放開收聽，按住通話";
+            }
+          }, 300);
+
+          playIncomingUlaw( new Uint8Array(payload.buffer, payload.byteOffset + 4, payload.byteLength - 4) );
         });
 
         client.on('error', (err) => {
-          statusText.innerText = "MQTT 錯誤: " + err.message;
+          statusText.innerText = "連線錯誤: " + err.message;
         });
 
       } catch (err) {
-        statusText.innerText = "授權錯誤: " + err.name + " - " + err.message;
+        statusText.innerText = "麥克風授權失敗: " + err.name + " - " + err.message;
         initBtn.disabled = false;
       }
     };
 
-    // 接收 ESP32 的 8kHz 16-bit PCM，平滑插值升頻至手機原生 48kHz 播放
-    function playIncomingPCM(payload) {
+    // 播放收到的 16kHz u-law 音訊：插值升頻至手機原生 48kHz + 低延遲時間軸排隊
+    function playIncomingUlaw(ulawBytes) {
       if (!audioCtx) return;
       if (audioCtx.state === 'suspended') audioCtx.resume();
 
-      const inSamples = Math.floor(payload.byteLength / 2);
-      if (inSamples === 0) return;
-
-      const dataView = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-      const raw8k = new Float32Array(inSamples);
-
-      for (let i = 0; i < inSamples; i++) {
-        const int16 = dataView.getInt16(i * 2, true);
-        raw8k[i] = int16 / 32768.0;
-      }
+      const inLen = ulawBytes.length;
+      if (inLen === 0) return;
 
       const nativeRate = audioCtx.sampleRate;
-      const ratio = nativeRate / ESP_TX_RATE;
-      const outSamples = Math.floor(inSamples * ratio);
-      const upsampled = new Float32Array(outSamples);
+      const ratio = nativeRate / TARGET_RATE;
+      const outLen = Math.floor(inLen * ratio);
+      const upsampled = new Float32Array(outLen);
 
-      for (let i = 0; i < outSamples; i++) {
+      // 線性插值平滑升頻，徹底消除封包接縫處的咔噠聲
+      for (let i = 0; i < outLen; i++) {
         const pos = i / ratio;
         const idx = Math.floor(pos);
         const frac = pos - idx;
-        const s0 = (idx === 0) ? lastSample : raw8k[idx - 1];
-        const s1 = raw8k[idx];
+        const s0 = (idx === 0) ? lastSample : ULAW_DECODE[ulawBytes[idx - 1]];
+        const s1 = ULAW_DECODE[ulawBytes[idx]];
         upsampled[i] = s0 + frac * (s1 - s0);
       }
-      lastSample = raw8k[inSamples - 1];
+      lastSample = ULAW_DECODE[ulawBytes[inLen - 1]];
 
-      const audioBuffer = audioCtx.createBuffer(1, outSamples, nativeRate);
+      // 封包頭尾微幅淡入淡出 (De-click 保護)
+      const fadeLen = Math.min(24, Math.floor(outLen / 10));
+      for (let i = 0; i < fadeLen; i++) {
+        const w = i / fadeLen;
+        upsampled[i] = lastSample * (1 - w) + upsampled[i] * w;
+      }
+
+      const audioBuffer = audioCtx.createBuffer(1, outLen, nativeRate);
       audioBuffer.copyToChannel(upsampled, 0);
 
       const source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioCtx.destination);
 
-      const currentTime = audioCtx.currentTime;
-      // 嚴格鎖定延遲上限在 0.15 秒內，一旦超出即刻跳到最新聲音
-      if (nextStartTime < currentTime || (nextStartTime - currentTime) > 0.15) {
-        nextStartTime = currentTime + 0.025;
+      const now = audioCtx.currentTime;
+      // 嚴格將排隊緩衝鎖定在 40ms ~ 160ms 之間，杜絕延遲累積
+      if (nextStartTime < now) {
+        nextStartTime = now + 0.04; // 初始 40ms Jitter 保護，保證聲音連續不破音
+      } else if (nextStartTime - now > 0.16) {
+        // 如果網絡突然湧入積壓超過 160ms，立即貼緊最新時間軸
+        nextStartTime = now + 0.04;
       }
 
       source.start(nextStartTime);
       nextStartTime += audioBuffer.duration;
     }
 
-    // 【100% 還原 v3/v4 完美版手機發送邏輯】
-    function downsampleTo16k(float32Buffer, inputSampleRate) {
-      const ratio = inputSampleRate / PHONE_TX_RATE;
-      const newLength = Math.floor(float32Buffer.length / ratio);
-      const result = new Int16Array(newLength);
+    // 將手機 48kHz 音訊平均值濾波降頻至 16kHz 並壓縮為 u-law (連同 4-byte ID 標頭)
+    function encodeAudioPacket(float32Buffer, inputRate) {
+      const ratio = inputRate / TARGET_RATE;
+      const sampleCount = Math.floor(float32Buffer.length / ratio);
+      // 頭 4 bytes 存放 MY_ID，後面存放 8-bit u-law 數據
+      const packet = new Uint8Array(4 + sampleCount);
+      const view = new DataView(packet.buffer);
+      view.setUint32(0, MY_ID, true);
 
-      for (let i = 0; i < newLength; i++) {
+      for (let i = 0; i < sampleCount; i++) {
         const start = Math.floor(i * ratio);
         const end = Math.min(Math.floor((i + 1) * ratio), float32Buffer.length);
         let sum = 0;
@@ -214,39 +291,49 @@
           count++;
         }
         let avg = count > 0 ? (sum / count) : float32Buffer[start];
-        let s = Math.max(-1, Math.min(1, avg * 1.3));
-        result[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+
+        // 輕微軟性噪音門檻 (Soft Noise Gate)：過濾環境極細微底噪
+        if (Math.abs(avg) < 0.004) {
+          avg *= 0.2;
+        } else {
+          avg *= 1.25; // 清晰人聲適度增幅
+        }
+
+        let clamped = Math.max(-1, Math.min(1, avg));
+        let int16 = clamped < 0 ? (clamped * 32768) : (clamped * 32767);
+        packet[4 + i] = linearToUlaw(int16 | 0);
       }
-      return result;
+      return packet;
     }
 
     pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); });
     pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); });
+    pttBtn.addEventListener('touchcancel', (e) => { e.preventDefault(); stopTalking(); });
     pttBtn.addEventListener('mousedown', (e) => { e.preventDefault(); startTalking(); });
     pttBtn.addEventListener('mouseup', (e) => { e.preventDefault(); stopTalking(); });
 
     function startTalking() {
       if (!client || !client.connected || isTalking) return;
       isTalking = true;
+      pttBtn.classList.remove('receiving');
       pttBtn.classList.add('active');
-      statusText.innerText = "正在通話中...";
+      pttBtn.innerText = "正在發話中...";
+      statusText.innerText = "正在發送高清語音...";
 
       if (audioCtx.state === 'suspended') audioCtx.resume();
 
       const source = audioCtx.createMediaStreamSource(micStream);
-      scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      // 2048 樣本在 48kHz 下僅 42.6ms 一包 (壓縮後每包只有 ~686 bytes)，超低延遲且極度穩定！
+      scriptNode = audioCtx.createScriptProcessor(2048, 1, 1);
 
       silencer = audioCtx.createGain();
       silencer.gain.value = 0;
 
       scriptNode.onaudioprocess = (e) => {
         if (!isTalking) return;
-
         const inputData = e.inputBuffer.getChannelData(0);
-        const pcm16 = downsampleTo16k(inputData, audioCtx.sampleRate);
-
-        const binaryPayload = new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength);
-        client.publish(TOPIC_PHONE_TX, binaryPayload);
+        const packet = encodeAudioPacket(inputData, audioCtx.sampleRate);
+        client.publish(ROOM_TOPIC, packet, { qos: 0 });
 
         txCount++;
         updateDebug();
@@ -261,7 +348,8 @@
       if (!isTalking) return;
       isTalking = false;
       pttBtn.classList.remove('active');
-      statusText.innerText = "通話結束，靜音待命中";
+      pttBtn.innerText = "按住通話 (PTT)";
+      statusText.innerText = "通話結束，放開收聽中";
 
       if (scriptNode) {
         scriptNode.disconnect();
