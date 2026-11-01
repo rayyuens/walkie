@@ -858,11 +858,11 @@
       const source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioCtx.destination);
+      source.onended = () => source.disconnect();
 
       const now = audioCtx.currentTime;
-      if (nextStartTime < now || (nextStartTime - now) > 0.16) {
-        nextStartTime = now + 0.04;
-      }
+      const earliestStartTime = now + 0.12;
+      if (nextStartTime < earliestStartTime) nextStartTime = earliestStartTime;
 
       source.start(nextStartTime);
       nextStartTime += audioBuffer.duration;
